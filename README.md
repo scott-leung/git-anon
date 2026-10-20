@@ -21,9 +21,9 @@ $ git pull && git push        # works exactly as before
 
 ## Background
 
-Closed-source AI coding agents such as Claude Code or Codex read your
+Claude Code 2.1.3xx reads your
 repository's git metadata — branch, recent commits, and the remote URL — to
-build context, and may report the remote URL with their telemetry. Some
+build context, and may report the remote URL with its telemetry. Some
 releases offer no switch to turn this off. The remote URL is one of the most
 identifying things on your machine: it names your company's git host, your
 organization, and every private project you work on.
