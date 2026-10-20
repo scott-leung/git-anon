@@ -4,8 +4,13 @@
 # A remote URL of the form `anon::<alias>` makes git run:
 #     git-remote-anon <remote-name> <alias>
 # The alias is resolved via ~/.config/git-anon/map (one `alias real_url` per
-# line, `#` comments) and the work is handed to git's own transports, so
-# .git/config and `git remote -v` never contain the real host or path.
+# line, `#` comments), so .git/config and `git remote -v` never contain the
+# real host or path.
+#
+# HTTPS is delegated to git's own helper. SSH and local paths speak the
+# helper `connect` protocol here and then exec the service directly, so the
+# helper exits as soon as the server side does (git remote-ext would not,
+# because git's dispatcher process keeps the pipe to git open).
 
 set -eu
 
@@ -25,46 +30,63 @@ esac
 real=$(awk -v k="$alias" '!/^[[:space:]]*(#|$)/ && $1 == k { print $2; exit }' "$MAP")
 [ -n "$real" ] || die "unknown alias '$alias'"
 
-# ext:: splits its command on spaces and treats % specially; refuse anything
-# that could break or inject into that command line.
-no_meta() {
-  case "$1" in
-    *[[:space:]\'\"\\%\`\$\;\&\|\<\>]*) die "alias '$alias': unsupported character in URL" ;;
-  esac
-}
-
 case "$real" in
   https://*) exec git remote-https "$remote" "$real" ;;
   http://*)  exec git remote-http  "$remote" "$real" ;;
-
-  ssh://*|git+ssh://*|ssh+git://*)
-    no_meta "$real"
-    rest=${real#*://}
-    hostpart=${rest%%/*}
-    path=/${rest#*/}
-    port=
-    case "$hostpart" in
-      *:*) port=${hostpart##*:}; hostpart=${hostpart%:*} ;;
-    esac
-    if [ -n "$port" ]; then
-      exec git remote-ext "$remote" "ssh -p $port $hostpart %S $path"
-    fi
-    exec git remote-ext "$remote" "ssh $hostpart %S $path"
-    ;;
-
-  file://*)
-    no_meta "$real"
-    exec git remote-ext "$remote" "git %s ${real#file://}"
-    ;;
-  /*)
-    no_meta "$real"
-    exec git remote-ext "$remote" "git %s $real"
-    ;;
-
-  *:*)  # scp-like: [user@]host:path
-    no_meta "$real"
-    exec git remote-ext "$remote" "ssh ${real%%:*} %S ${real#*:}"
-    ;;
-
-  *) die "alias '$alias': unsupported URL form" ;;
 esac
+
+# The path ends up inside a remote shell command; refuse anything that could
+# break out of the single quotes we put around it.
+case "$real" in
+  *[[:space:]\'\"\\\`\$\;\&\|\<\>]*) die "alias '$alias': unsupported character in URL" ;;
+esac
+
+host= port= path=
+case "$real" in
+  ssh://*|git+ssh://*|ssh+git://*)
+    rest=${real#*://}
+    host=${rest%%/*}
+    path=/${rest#*/}
+    case "$host" in
+      *:*) port=${host##*:}; host=${host%:*} ;;
+    esac
+    ;;
+  file://*) path=${real#file://} ;;
+  /*)       path=$real ;;
+  *:*)      host=${real%%:*}; path=${real#*:} ;;
+  *)        die "alias '$alias': unsupported URL form" ;;
+esac
+case "$host" in -*) die "alias '$alias': invalid host" ;; esac
+
+# Helper protocol: advertise `connect`, then hand stdin/stdout to the service.
+# `read` consumes the pipe byte by byte, so nothing meant for the service is lost.
+service=
+while IFS= read -r line; do
+  case "$line" in
+    capabilities) printf 'connect\n\n' ;;
+    connect\ *)   service=${line#connect }; break ;;
+    '')           exit 0 ;;
+    *)            die "unsupported helper command: $line" ;;
+  esac
+done
+case "$service" in
+  git-upload-pack|git-receive-pack|git-upload-archive) ;;
+  *) die "unsupported service '$service'" ;;
+esac
+printf '\n'
+
+if [ -z "$host" ]; then
+  exec git "${service#git-}" "$path"
+fi
+
+# Same precedence as git: GIT_SSH_COMMAND, core.sshCommand, GIT_SSH, ssh.
+ssh_cmd=${GIT_SSH_COMMAND:-$(git config --get core.sshCommand 2>/dev/null || true)}
+if [ -n "$ssh_cmd" ]; then
+  set -- sh -c "$ssh_cmd \"\$@\"" ssh
+else
+  set -- "${GIT_SSH:-ssh}"
+fi
+if [ -n "$port" ]; then
+  set -- "$@" -p "$port"
+fi
+exec "$@" "$host" "$service '$path'"

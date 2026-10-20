@@ -17,17 +17,23 @@ $ git pull && git push        # 和以前一样
 
 ## 原理
 
-git 遇到 `anon::<别名>` 形式的地址时，会调用 `git-remote-anon` 这个程序处理。它在 `~/.config/git-anon/map`（权限 `600`）里查出真实地址，再交给 git 自己的传输层（HTTPS / SSH / 本地路径）完成连接。
+git 遇到 `anon::<别名>` 形式的地址时，会调用 `git-remote-anon` 这个程序处理。它在 `~/.config/git-anon/map`（权限 `600`）里查出真实地址，HTTPS 交给 git 自带的 helper，SSH 和本地路径直接调用 `ssh` / `git upload-pack`（支持 `GIT_SSH_COMMAND`、`core.sshCommand`）。
 
 因此 `.git/config`、`git remote -v`、`git remote get-url` 里只有别名，看不到域名、组织名和仓库名。SSH key、`~/.ssh/config`、凭据管理器都照常工作。
 
 ## 安装
 
 ```sh
+npm install -g git-anon
+```
+
+不用 Node.js 的话：
+
+```sh
 curl -fsSL https://raw.githubusercontent.com/scott-leung/git-anon/main/install.sh | sh
 ```
 
-或在源码目录执行 `make install`。默认装到 `~/.local/bin`（可用 `BINDIR=…` 修改），该目录需要在 `PATH` 中。卸载：`sh install.sh --uninstall`。
+或在源码目录执行 `make install`。默认装到 `~/.local/bin`（可用 `BINDIR=…` 修改），该目录需要在 `PATH` 中。卸载：`npm uninstall -g git-anon` 或 `sh install.sh --uninstall`。
 
 ## 使用
 
@@ -52,4 +58,6 @@ git anon off        # 恢复真实地址
 
 ## 开发
 
-`make test` 运行离线端到端测试，`make lint` 运行 shellcheck。CI 覆盖 Ubuntu（dash）、macOS 和 Alpine（busybox ash）。推送与 `bin/git-anon` 中 `VERSION` 一致的 `vX.Y.Z` 标签会自动发布 Release。
+`make test` 运行离线端到端测试，`make lint` 运行 shellcheck。CI 覆盖 Ubuntu（dash）、macOS 和 Alpine（busybox ash）。CI 还会在 Ubuntu 和 macOS 上安装 npm 包做冒烟测试。
+
+发版：同时修改 `bin/git-anon` 的 `VERSION` 和 `package.json` 的 `version`，推送 `vX.Y.Z` 标签。Release 工作流会校验版本、跑测试、创建 GitHub Release 并发布到 npm（带 provenance，使用 npm trusted publishing 或仓库 secret `NPM_TOKEN`）。

@@ -1,0 +1,40 @@
+{
+  "name": "git-anon",
+  "version": "0.1.0",
+  "description": "Hide real git remote URLs from tools that read them (AI agents, IDE plugins, telemetry) while git keeps working",
+  "keywords": [
+    "git",
+    "privacy",
+    "remote",
+    "remote-helper",
+    "anonymize",
+    "telemetry"
+  ],
+  "homepage": "https://github.com/scott-leung/git-anon#readme",
+  "bugs": "https://github.com/scott-leung/git-anon/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/scott-leung/git-anon.git"
+  },
+  "license": "MIT",
+  "author": "Scott Leung",
+  "bin": {
+    "git-anon": "bin/git-anon",
+    "git-remote-anon": "bin/git-remote-anon"
+  },
+  "files": [
+    "bin/",
+    "README.zh-CN.md"
+  ],
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "scripts": {
+    "test": "sh tests/run.sh"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  }
+}

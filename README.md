@@ -1,6 +1,7 @@
 # git-anon
 
 [![CI](https://github.com/scott-leung/git-anon/actions/workflows/ci.yml/badge.svg)](https://github.com/scott-leung/git-anon/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/git-anon)](https://www.npmjs.com/package/git-anon)
 
 [中文说明](README.zh-CN.md)
 
@@ -27,7 +28,7 @@ hands the connection to git's own transport:
 | Real URL in the map               | Handed to                           |
 |-----------------------------------|-------------------------------------|
 | `https://…`, `http://…`           | `git remote-https` / `remote-http`  |
-| `git@host:path`, `ssh://host/path` | `ssh` via `git remote-ext`         |
+| `git@host:path`, `ssh://host/path` | `ssh` (honors `GIT_SSH_COMMAND`, `core.sshCommand`, `GIT_SSH`) |
 | `/path`, `file:///path`           | local `git upload-pack` / `receive-pack` |
 
 So `.git/config`, `git remote -v` and `git remote get-url` contain only the
@@ -37,12 +38,19 @@ credential helpers keep working unchanged.
 ## Install
 
 ```sh
+npm install -g git-anon
+```
+
+or without Node.js:
+
+```sh
 curl -fsSL https://raw.githubusercontent.com/scott-leung/git-anon/main/install.sh | sh
 ```
 
-or from a checkout: `make install`. Installs two scripts into `~/.local/bin`
-(override with `BINDIR=…`); that directory must be on your `PATH`.
-Requires git ≥ 2.0 and a POSIX shell. Uninstall: `sh install.sh --uninstall`.
+The script installs into `~/.local/bin` (override with `BINDIR=…`), which must
+be on your `PATH`; `make install` does the same from a checkout. Uninstall with
+`npm uninstall -g git-anon` or `sh install.sh --uninstall`.
+Requires git and a POSIX shell (macOS / Linux).
 
 ## Usage
 
@@ -95,8 +103,12 @@ make lint   # shellcheck
 ```
 
 CI runs the tests on Ubuntu (dash), macOS (bash as sh) and Alpine
-(busybox ash). Pushing a tag `vX.Y.Z` matching `VERSION` in `bin/git-anon`
-publishes a GitHub release.
+(busybox ash), and installs the npm tarball on Ubuntu and macOS.
+
+Releasing: bump `VERSION` in `bin/git-anon` and `version` in `package.json`,
+then push a tag `vX.Y.Z`. The release workflow verifies versions, runs the
+tests, creates a GitHub release and publishes to npm with provenance (via npm
+trusted publishing, or an `NPM_TOKEN` repository secret).
 
 ## License
 

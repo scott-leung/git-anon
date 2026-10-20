@@ -18,7 +18,7 @@ git config --global advice.detachedHead false
 cat > "$T/fakebin/ssh" <<EOF
 #!/bin/sh
 echo "\$*" >> "$T/ssh.log"
-while [ "\$1" = "-p" ]; do shift 2; done
+while [ "\$1" = "-p" ] || [ "\$1" = "-o" ]; do shift 2; done
 shift
 exec sh -c "\$*"
 EOF
@@ -37,6 +37,20 @@ check() {  # description, command...
 check_not() {
   d=$1; shift
   if "$@" >/dev/null 2>&1; then bad "$d"; else ok "$d"; fi
+}
+
+# with_timeout <secs> cmd...: run cmd, kill it after <secs>; touches $T/timed-out on kill.
+with_timeout() {
+  secs=$1; shift
+  rm -f "$T/timed-out"
+  "$@" &
+  pid=$!
+  ( sleep "$secs"; kill -9 "$pid" 2>/dev/null && touch "$T/timed-out" ) &
+  watchdog=$!
+  rc=0; wait "$pid" || rc=$?
+  kill "$watchdog" 2>/dev/null || true
+  wait "$watchdog" 2>/dev/null || true
+  return "$rc"
 }
 
 commit() {  # dir msg
@@ -106,8 +120,20 @@ for a in scp1 url1; do
   check "$a: push" git -C "$W" push -q origin main
   check "$a: clone" git clone -q "anon::$a" "$T/clone-$a"
 done
-check "scp form argv" grep -qx "git@fakehost git-receive-pack $T/remote.git" "$T/ssh.log"
-check "ssh:// form argv with port" grep -qx -- "-p 2222 git@fakehost git-upload-pack $T/remote.git" "$T/ssh.log"
+check "scp form argv" grep -qxF "git@fakehost git-receive-pack '$T/remote.git'" "$T/ssh.log"
+check "ssh:// form argv with port" grep -qxF -- "-p 2222 git@fakehost git-upload-pack '$T/remote.git'" "$T/ssh.log"
+: > "$T/ssh.log"
+check "GIT_SSH_COMMAND honored" env GIT_SSH_COMMAND="ssh -o X=1" git ls-remote anon::scp1
+check "GIT_SSH_COMMAND argv" grep -qxF -- "-o X=1 git@fakehost git-upload-pack '$T/remote.git'" "$T/ssh.log"
+
+echo "# failures exit instead of hanging"
+printf 'gone %s\nsshgone git@fakehost:%s\n' "$T/missing.git" "$T/missing.git" >> "$GIT_ANON_MAP"
+check_not "missing local repo: ls-remote fails" with_timeout 20 git ls-remote anon::gone
+check "missing local repo: did not time out" test ! -e "$T/timed-out"
+check_not "missing ssh repo: fetch fails" with_timeout 20 git -C "$W" fetch anon::sshgone
+check "missing ssh repo: did not time out" test ! -e "$T/timed-out"
+check_not "missing local repo: clone fails" with_timeout 20 git clone -q anon::gone "$T/clone-gone"
+check "missing local repo clone: did not time out" test ! -e "$T/timed-out"
 
 echo "# rejection"
 check_not "invalid alias rejected" git ls-remote "anon::../etc"
