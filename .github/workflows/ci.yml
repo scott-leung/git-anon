@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: shellcheck
+        run: make lint
+
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # ubuntu: /bin/sh is dash; macOS: /bin/sh is bash in POSIX mode.
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - run: git --version
+      - run: make test
+
+  test-busybox:
+    name: test (alpine / busybox ash)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: run tests in alpine
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src alpine:latest \
+            sh -c 'apk add --no-cache git openssh-client >/dev/null && sh tests/run.sh'

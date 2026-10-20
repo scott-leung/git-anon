@@ -1,0 +1,70 @@
+#!/bin/sh
+# git-remote-anon — git remote helper that hides real remote URLs.
+#
+# A remote URL of the form `anon::<alias>` makes git run:
+#     git-remote-anon <remote-name> <alias>
+# The alias is resolved via ~/.config/git-anon/map (one `alias real_url` per
+# line, `#` comments) and the work is handed to git's own transports, so
+# .git/config and `git remote -v` never contain the real host or path.
+
+set -eu
+
+MAP="${GIT_ANON_MAP:-${XDG_CONFIG_HOME:-$HOME/.config}/git-anon/map}"
+
+die() { echo "git-remote-anon: $*" >&2; exit 1; }
+
+[ $# -ge 2 ] || die "usage: git-remote-anon <remote> <alias>"
+remote=$1
+alias=$2
+
+case "$alias" in
+  ''|*[!A-Za-z0-9._-]*) die "invalid alias '$alias' (allowed: A-Z a-z 0-9 . _ -)" ;;
+esac
+[ -r "$MAP" ] || die "map file not found: $MAP"
+
+real=$(awk -v k="$alias" '!/^[[:space:]]*(#|$)/ && $1 == k { print $2; exit }' "$MAP")
+[ -n "$real" ] || die "unknown alias '$alias'"
+
+# ext:: splits its command on spaces and treats % specially; refuse anything
+# that could break or inject into that command line.
+no_meta() {
+  case "$1" in
+    *[[:space:]\'\"\\%\`\$\;\&\|\<\>]*) die "alias '$alias': unsupported character in URL" ;;
+  esac
+}
+
+case "$real" in
+  https://*) exec git remote-https "$remote" "$real" ;;
+  http://*)  exec git remote-http  "$remote" "$real" ;;
+
+  ssh://*|git+ssh://*|ssh+git://*)
+    no_meta "$real"
+    rest=${real#*://}
+    hostpart=${rest%%/*}
+    path=/${rest#*/}
+    port=
+    case "$hostpart" in
+      *:*) port=${hostpart##*:}; hostpart=${hostpart%:*} ;;
+    esac
+    if [ -n "$port" ]; then
+      exec git remote-ext "$remote" "ssh -p $port $hostpart %S $path"
+    fi
+    exec git remote-ext "$remote" "ssh $hostpart %S $path"
+    ;;
+
+  file://*)
+    no_meta "$real"
+    exec git remote-ext "$remote" "git %s ${real#file://}"
+    ;;
+  /*)
+    no_meta "$real"
+    exec git remote-ext "$remote" "git %s $real"
+    ;;
+
+  *:*)  # scp-like: [user@]host:path
+    no_meta "$real"
+    exec git remote-ext "$remote" "ssh ${real%%:*} %S ${real#*:}"
+    ;;
+
+  *) die "alias '$alias': unsupported URL form" ;;
+esac

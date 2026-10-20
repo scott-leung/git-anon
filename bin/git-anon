@@ -1,0 +1,190 @@
+#!/bin/sh
+# git anon — hide real git remote URLs behind local aliases.
+#
+# Real URLs live only in ~/.config/git-anon/map; .git/config holds
+# `anon::<alias>`, which git resolves through git-remote-anon.
+
+set -eu
+
+VERSION=0.1.0
+MAP="${GIT_ANON_MAP:-${XDG_CONFIG_HOME:-$HOME/.config}/git-anon/map}"
+
+usage() {
+  cat <<'EOF'
+usage: git anon <command> [args]
+
+  init [--alias NAME]    anonymize every remote of the current repo
+  off                    restore every remote of the current repo
+  status                 show which remotes are anonymized
+
+  add <alias> [remote]   anonymize one remote (default: origin) with a chosen alias
+  restore [remote]       restore one remote (default: origin)
+  list                   list known aliases (never prints URLs)
+  show <alias>           print the real URL behind an alias
+  clone <alias> [dir]    clone through an alias
+  version                print version
+EOF
+}
+
+die() { echo "git anon: $*" >&2; exit 1; }
+
+valid_alias() {
+  case "$1" in
+    ''|*[!A-Za-z0-9._-]*) die "invalid alias '$1' (allowed: A-Z a-z 0-9 . _ -)" ;;
+  esac
+}
+
+in_repo() {
+  git rev-parse --git-dir >/dev/null 2>&1 || die "not inside a git repository"
+}
+
+ensure_map() {
+  mapdir=$(dirname "$MAP")
+  [ -d "$mapdir" ] || { mkdir -p "$mapdir"; chmod 700 "$mapdir"; }
+  [ -f "$MAP" ] || (umask 077; : > "$MAP")
+  chmod 600 "$MAP"
+}
+
+lookup() {
+  [ -r "$MAP" ] || return 0
+  awk -v k="$1" '!/^[[:space:]]*(#|$)/ && $1 == k { print $2; exit }' "$MAP"
+}
+
+rand_hex() {
+  od -An -N4 -tx1 /dev/urandom | tr -d ' \n'
+}
+
+add_entry() {  # alias url
+  existing=$(lookup "$1")
+  if [ -n "$existing" ]; then
+    [ "$existing" = "$2" ] && return 0
+    die "alias '$1' already maps to a different URL"
+  fi
+  printf '%s %s\n' "$1" "$2" >> "$MAP"
+}
+
+# anonymize_key <remote> <url|pushurl> <alias>; returns 1 if the key is unset
+anonymize_key() {
+  n=$(git config --get-all "remote.$1.$2" | wc -l | tr -d ' ')
+  [ "$n" -gt 0 ] || return 1
+  [ "$n" -eq 1 ] || die "remote.$1.$2 has $n values; anonymize it manually"
+  cur=$(git config --get "remote.$1.$2")
+  case "$cur" in
+    anon::*) echo "remote.$1.$2 already anonymized ($cur)"; return 0 ;;
+    *[[:space:]]*) die "remote.$1.$2 contains whitespace" ;;
+  esac
+  add_entry "$3" "$cur"
+  git config "remote.$1.$2" "anon::$3"
+  echo "remote.$1.$2 -> anon::$3"
+}
+
+restore_key() {  # remote url|pushurl
+  cur=$(git config --get "remote.$1.$2" || true)
+  case "$cur" in
+    anon::*) ;;
+    *) return 0 ;;
+  esac
+  a=${cur#anon::}
+  real=$(lookup "$a")
+  [ -n "$real" ] || die "alias '$a' not found in $MAP"
+  git config "remote.$1.$2" "$real"
+  echo "remote.$1.$2 restored"
+}
+
+anonymize_remote() {  # remote alias
+  valid_alias "$2"
+  anonymize_key "$1" url "$2" || die "remote '$1' has no url"
+  if git config --get "remote.$1.pushurl" >/dev/null; then
+    anonymize_key "$1" pushurl "$2.push"
+  fi
+}
+
+cmd_init() {
+  base=
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --alias) [ $# -ge 2 ] || die "--alias needs a value"; base=$2; shift 2 ;;
+      --alias=*) base=${1#--alias=}; shift ;;
+      *) die "unknown option '$1'" ;;
+    esac
+  done
+  in_repo
+  remotes=$(git remote)
+  [ -n "$remotes" ] || die "this repository has no remotes"
+  # Random by default: an alias derived from the repo name would leak it.
+  [ -n "$base" ] || base="r$(rand_hex)"
+  valid_alias "$base"
+  ensure_map
+  for r in $remotes; do
+    if [ "$r" = origin ]; then
+      a=$base
+    else
+      a="$base-$(printf '%s' "$r" | tr -c 'A-Za-z0-9._-' '_')"
+    fi
+    anonymize_remote "$r" "$a"
+  done
+  if ! git config --get protocol.anon.allow >/dev/null; then
+    echo "hint: for submodules run: git config --global protocol.anon.allow always"
+  fi
+}
+
+cmd_off() {
+  in_repo
+  for r in $(git remote); do
+    restore_key "$r" url
+    restore_key "$r" pushurl
+  done
+}
+
+cmd_status() {
+  in_repo
+  remotes=$(git remote)
+  [ -n "$remotes" ] || { echo "no remotes"; return 0; }
+  for r in $remotes; do
+    u=$(git config --get "remote.$r.url" || true)
+    case "$u" in
+      anon::*) echo "$r: anonymized ($u)" ;;
+      *) echo "$r: NOT anonymized" ;;
+    esac
+  done
+}
+
+cmd=${1:-}
+[ $# -gt 0 ] && shift
+
+case "$cmd" in
+  init)   cmd_init "$@" ;;
+  off)    cmd_off ;;
+  status) cmd_status ;;
+  add)
+    [ $# -ge 1 ] || die "usage: git anon add <alias> [remote]"
+    in_repo
+    ensure_map
+    anonymize_remote "${2:-origin}" "$1"
+    ;;
+  restore)
+    in_repo
+    restore_key "${1:-origin}" url
+    restore_key "${1:-origin}" pushurl
+    ;;
+  list)
+    if [ -r "$MAP" ]; then
+      awk '!/^[[:space:]]*(#|$)/ { print $1 }' "$MAP"
+    fi
+    ;;
+  show)
+    [ $# -ge 1 ] || die "usage: git anon show <alias>"
+    real=$(lookup "$1")
+    [ -n "$real" ] || die "unknown alias '$1'"
+    echo "$real"
+    ;;
+  clone)
+    [ $# -ge 1 ] || die "usage: git anon clone <alias> [dir]"
+    valid_alias "$1"
+    [ -n "$(lookup "$1")" ] || die "unknown alias '$1'"
+    exec git clone "anon::$1" ${2:+"$2"}
+    ;;
+  version|--version) echo "git-anon $VERSION" ;;
+  ''|help|-h|--help) usage ;;
+  *) usage >&2; exit 1 ;;
+esac

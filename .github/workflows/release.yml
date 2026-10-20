@@ -1,0 +1,26 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: check version matches tag
+        run: |
+          v=$(sed -n 's/^VERSION=//p' bin/git-anon)
+          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "VERSION=$v does not match tag $GITHUB_REF_NAME"; exit 1; }
+      - run: make lint test
+      - name: create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            bin/git-anon bin/git-remote-anon install.sh \
+            --title "$GITHUB_REF_NAME" --generate-notes
