@@ -194,6 +194,27 @@ check "clone --recurse-submodules through alias" git anon clone --recurse-submod
 check "clone --recurse-submodules: nested checked out" test -f "$T/sm4/rel/nested/f.txt"
 check "clone --recurse-submodules: no real URL left" test -z "$(leaks "$T/sm4")"
 
+echo "# traces outside config (reflog, FETCH_HEAD)"
+git clone -q "$S/super.git" "$T/tr1"
+git -C "$T/tr1" fetch -q origin
+check "precondition: reflog records clone URL" grep -rqF "$S/super.git" "$T/tr1/.git/logs"
+(cd "$T/tr1" && git anon init) >/dev/null
+check "reflog and FETCH_HEAD scrubbed" sh -c "! grep -rqF '$S/super.git' '$T/tr1/.git/logs' '$T/tr1/.git/FETCH_HEAD'"
+check "reflog still readable" sh -c "git -C '$T/tr1' reflog -1 | grep -q 'clone: from anon::'"
+git clone -q "$S/super.git" "$T/tr2"
+(cd "$T/tr2" && git anon init >/dev/null && git anon init) > "$T/tr2.out"
+check "rerun on already-anonymized repo is clean" sh -c "! grep -rqF '$S' '$T/tr2/.git/logs'"
+check "nothing printed about scrubbing on clean rerun" sh -c "! grep -q scrubbed '$T/tr2.out'"
+git clone -q "$S/super.git" "$T/tr3"
+git -C "$T/tr3" remote set-url origin "anon::$(git -C "$T/tr1" config remote.origin.url | sed 's/^anon:://')"
+(cd "$T/tr3" && git anon init) > "$T/tr3.out"
+check "repo anonymized by an older version gets scrubbed" sh -c "! grep -rqF '$S' '$T/tr3/.git/logs' && grep -q scrubbed '$T/tr3.out'"
+git clone -q "git@fakehost:$S/super.git" "$T/tr4"
+check "precondition: reflog records URL without user" grep -rqF "clone: from fakehost:$S/super.git" "$T/tr4/.git/logs"
+(cd "$T/tr4" && git anon init) >/dev/null
+check "scp-style URL scrubbed in user-less form too" sh -c "! grep -rqF 'fakehost' '$T/tr4/.git/logs'"
+check "submodule reflogs scrubbed" sh -c "! grep -rqF '$S' \$(find '$T/sm1/.git/modules' -type d -name logs)"
+
 echo "# rejection"
 check_not "invalid alias rejected" git ls-remote "anon::../etc"
 check_not "unknown alias rejected" git ls-remote anon::nope

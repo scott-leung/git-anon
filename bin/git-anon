@@ -84,6 +84,46 @@ san() {
   printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'
 }
 
+# strip_userinfo <url>: the form git writes into reflogs and FETCH_HEAD,
+# with `user@` / `user:password@` removed.
+strip_userinfo() {
+  case "$1" in
+    *://*@*) printf '%s\n' "$1" | sed -E 's#^([a-z+]+://)[^/@]*@#\1#' ;;
+    *://*)   printf '%s\n' "$1" ;;
+    *@*:*)   printf '%s\n' "${1#*@}" ;;
+    *)       printf '%s\n' "$1" ;;
+  esac
+}
+
+# scrub_traces <real-url> <replacement>: git also records the URL outside the
+# config, e.g. "clone: from <url>" in reflogs and in FETCH_HEAD. Replace the
+# URL text there (reflog structure is untouched).
+scrub_traces() {
+  [ -n "$1" ] || return 0
+  scrub_literal "$1" "$2"
+  bare=$(strip_userinfo "$1")
+  [ "$bare" = "$1" ] || scrub_literal "$bare" "$2"
+}
+
+scrub_literal() {
+  gd=$(git rev-parse --git-dir)
+  cd_=$(git rev-parse --git-common-dir)
+  for d in "$gd" "$cd_"; do
+    find "$d/logs" "$d/FETCH_HEAD" -type f 2>/dev/null | while IFS= read -r f; do
+      grep -qF -- "$1" "$f" || continue
+      awk -v from="$1" -v to="$2" '{
+        out = ""; line = $0
+        while ((i = index(line, from)) > 0) {
+          out = out substr(line, 1, i - 1) to
+          line = substr(line, i + length(from))
+        }
+        print out line
+      }' "$f" > "$f.anon-tmp" && cat "$f.anon-tmp" > "$f" && rm -f "$f.anon-tmp"
+      echo "scrubbed real URL from ${f#"$d"/}"
+    done
+  done
+}
+
 # anonymize_key <remote> <url|pushurl> <alias> [auto]; returns 1 if the key is unset.
 # With `auto`, a taken alias is replaced by a free one instead of failing.
 anonymize_key() {
@@ -92,7 +132,11 @@ anonymize_key() {
   [ "$n" -eq 1 ] || die "remote.$1.$2 has $n values; anonymize it manually"
   cur=$(git config --get "remote.$1.$2")
   case "$cur" in
-    anon::*) echo "remote.$1.$2 already anonymized ($cur)"; return 0 ;;
+    anon::*)
+      echo "remote.$1.$2 already anonymized ($cur)"
+      scrub_traces "$(lookup "${cur#anon::}")" "$cur"
+      return 0
+      ;;
     *[[:space:]]*) die "remote.$1.$2 contains whitespace" ;;
   esac
   al=$3
@@ -100,6 +144,7 @@ anonymize_key() {
   add_entry "$al" "$cur"
   git config "remote.$1.$2" "anon::$al"
   echo "remote.$1.$2 -> anon::$al"
+  scrub_traces "$cur" "anon::$al"
 }
 
 restore_key() {  # remote url|pushurl
