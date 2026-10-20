@@ -135,6 +135,65 @@ check "missing ssh repo: did not time out" test ! -e "$T/timed-out"
 check_not "missing local repo: clone fails" with_timeout 20 git clone -q anon::gone "$T/clone-gone"
 check "missing local repo clone: did not time out" test ! -e "$T/timed-out"
 
+echo "# submodules"
+# super ── abs (absolute URL)
+#       └─ rel (relative ../sub-rel.git) ── nested (relative ../nested.git)
+git config --global protocol.file.allow always   # plain git needs it for local submodules
+S=$T/srv
+mkdir -p "$S"
+for r in super sub-abs sub-rel nested; do
+  git init -q --bare "$S/$r.git"
+  git clone -q "$S/$r.git" "$T/seed-$r" 2>/dev/null
+  commit "$T/seed-$r" "$r"
+done
+git -C "$T/seed-nested" push -q origin main
+git -C "$T/seed-sub-abs" push -q origin main
+(cd "$T/seed-sub-rel" && git submodule add -q ../nested.git nested && git commit -qm sub && git push -q origin main)
+(cd "$T/seed-super" && git submodule add -q "$S/sub-abs.git" abs && git submodule add -q ../sub-rel.git rel \
+  && git commit -qm subs && git push -q origin main)
+leaks() {  # repo dir: list config files that still contain a real server path
+  [ -d "$1/.git" ] || { echo "missing $1"; return 0; }
+  find "$1/.git" -name config -type f -exec grep -l "$S" {} + 2>/dev/null || true
+}
+
+git clone -q --recurse-submodules "$S/super.git" "$T/sm1" 2>/dev/null
+check "submodules: precondition, real URLs present" sh -c "[ -n \"\$(find '$T/sm1/.git' -name config -exec grep -l '$S' {} +)\" ]"
+(cd "$T/sm1" && git anon init) > "$T/sm1.out"
+check "submodules: no real URL left in any .git config" test -z "$(leaks "$T/sm1")"
+check "submodules: nested submodule remote anonymized" sh -c "git -C '$T/sm1/rel/nested' remote get-url origin | grep -q '^anon::'"
+check "submodules: protocol.anon.allow set globally" sh -c "[ \"\$(git config --global protocol.anon.allow)\" = always ]"
+check "submodules: .gitmodules note printed" grep -q "^note: .gitmodules" "$T/sm1.out"
+check "submodules: status all anonymized" sh -c "cd '$T/sm1' && ! git anon status | grep -q NOT"
+check "submodules: status shows nested" sh -c "cd '$T/sm1' && git anon status | grep -q '^rel/submodule nested: anonymized'"
+check "submodules: recursive fetch" git -C "$T/sm1" fetch -q --recurse-submodules=yes
+commit "$T/sm1/rel/nested" nested2
+check "submodules: push from nested submodule" git -C "$T/sm1/rel/nested" push -q origin HEAD:main
+check "submodules: init is idempotent" sh -c "cd '$T/sm1' && git anon init | grep -q 'submodule.rel.url already anonymized'"
+(cd "$T/sm1" && git anon off) >/dev/null
+check "submodules: off leaves no anon:: anywhere" sh -c "! find '$T/sm1/.git' -name config -exec grep -l 'anon::' {} + | grep -q ."
+check "submodules: off restores relative-resolved URL" sh -c "[ \"\$(git -C '$T/sm1' config submodule.rel.url)\" = '$S/sub-rel.git' ]"
+
+git clone -q "$S/super.git" "$T/sm2"
+(cd "$T/sm2" && git anon init) >/dev/null
+check "uninitialized: stays inactive" sh -c "git -C '$T/sm2' submodule status | grep -q '^-'"
+check "uninitialized: relative URL pre-resolved" sh -c "git -C '$T/sm2' config submodule.rel.url | grep -q '^anon::'"
+check "uninitialized: plain submodule update --init works" git -C "$T/sm2" submodule --quiet update --init
+check "uninitialized: first level cloned via alias" sh -c "git -C '$T/sm2/rel' remote get-url origin | grep -q '^anon::'"
+check "git anon update clones nested level" sh -c "cd '$T/sm2' && git anon update"
+check "git anon update: nested checked out" test -f "$T/sm2/rel/nested/f.txt"
+check "git anon update: no real URL left" test -z "$(leaks "$T/sm2")"
+
+git clone -q "$S/super.git" "$T/sm3"
+(cd "$T/sm3" && git anon init && git anon off) >/dev/null
+check "off on never-initialized submodules restores pristine state" \
+  sh -c "! git -C '$T/sm3' config --get-regexp '^submodule\.' >/dev/null"
+
+(cd "$T/sm1" && git anon init) >/dev/null
+salias=$(git -C "$T/sm1" config remote.origin.url | sed 's/^anon:://')
+check "clone --recurse-submodules through alias" git anon clone --recurse-submodules "$salias" "$T/sm4"
+check "clone --recurse-submodules: nested checked out" test -f "$T/sm4/rel/nested/f.txt"
+check "clone --recurse-submodules: no real URL left" test -z "$(leaks "$T/sm4")"
+
 echo "# rejection"
 check_not "invalid alias rejected" git ls-remote "anon::../etc"
 check_not "unknown alias rejected" git ls-remote anon::nope

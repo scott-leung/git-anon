@@ -13,15 +13,18 @@ usage() {
   cat <<'EOF'
 usage: git anon <command> [args]
 
-  init [--alias NAME]    anonymize every remote of the current repo
-  off                    restore every remote of the current repo
-  status                 show which remotes are anonymized
+  init [--alias NAME]    anonymize every remote of the current repo and its submodules
+  off                    restore every remote of the current repo and its submodules
+  status                 show which remotes and submodules are anonymized
+  update                 like `git submodule update --init --recursive`, anonymizing
+                         each level before cloning the next
 
   add <alias> [remote]   anonymize one remote (default: origin) with a chosen alias
   restore [remote]       restore one remote (default: origin)
   list                   list known aliases (never prints URLs)
   show <alias>           print the real URL behind an alias
-  clone <alias> [dir]    clone through an alias
+  clone [--recurse-submodules] <alias> [dir]
+                         clone through an alias
   version                print version
 EOF
 }
@@ -63,7 +66,26 @@ add_entry() {  # alias url
   printf '%s %s\n' "$1" "$2" >> "$MAP"
 }
 
-# anonymize_key <remote> <url|pushurl> <alias>; returns 1 if the key is unset
+# pick_alias <wanted> <url>: <wanted> if it is free or already maps to <url>,
+# otherwise <wanted>-<random>.
+pick_alias() {
+  cand=$1
+  while :; do
+    existing=$(lookup "$cand")
+    if [ -z "$existing" ] || [ "$existing" = "$2" ]; then
+      echo "$cand"
+      return 0
+    fi
+    cand="$1-$(rand_hex)"
+  done
+}
+
+san() {
+  printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'
+}
+
+# anonymize_key <remote> <url|pushurl> <alias> [auto]; returns 1 if the key is unset.
+# With `auto`, a taken alias is replaced by a free one instead of failing.
 anonymize_key() {
   n=$(git config --get-all "remote.$1.$2" | wc -l | tr -d ' ')
   [ "$n" -gt 0 ] || return 1
@@ -73,9 +95,11 @@ anonymize_key() {
     anon::*) echo "remote.$1.$2 already anonymized ($cur)"; return 0 ;;
     *[[:space:]]*) die "remote.$1.$2 contains whitespace" ;;
   esac
-  add_entry "$3" "$cur"
-  git config "remote.$1.$2" "anon::$3"
-  echo "remote.$1.$2 -> anon::$3"
+  al=$3
+  [ "${4:-}" != auto ] || al=$(pick_alias "$3" "$cur")
+  add_entry "$al" "$cur"
+  git config "remote.$1.$2" "anon::$al"
+  echo "remote.$1.$2 -> anon::$al"
 }
 
 restore_key() {  # remote url|pushurl
@@ -91,12 +115,241 @@ restore_key() {  # remote url|pushurl
   echo "remote.$1.$2 restored"
 }
 
-anonymize_remote() {  # remote alias
+anonymize_remote() {  # remote alias [auto]
   valid_alias "$2"
-  anonymize_key "$1" url "$2" || die "remote '$1' has no url"
+  anonymize_key "$1" url "$2" "${3:-}" || die "remote '$1' has no url"
   if git config --get "remote.$1.pushurl" >/dev/null; then
-    anonymize_key "$1" pushurl "$2.push"
+    anonymize_key "$1" pushurl "$2.push" "${3:-}"
   fi
+}
+
+# ---- submodules -----------------------------------------------------------
+# All functions below operate on the repository in the current directory,
+# which must be its top level. Recursion into submodules happens in
+# subshells, so the plain (non-local) variables do not clash.
+
+# Real URL of the remote that relative submodule URLs are resolved against.
+super_real_url() {
+  b=$(git symbolic-ref -q --short HEAD || true)
+  r=
+  [ -z "$b" ] || r=$(git config --get "branch.$b.remote" || true)
+  u=$(git config --get "remote.${r:-origin}.url" || true)
+  case "$u" in
+    anon::*) lookup "${u#anon::}" ;;
+    *) printf '%s\n' "$u" ;;
+  esac
+}
+
+# resolve_url <base> <url>: resolve a relative submodule URL (./x, ../x) the
+# way git does; absolute URLs are returned unchanged.
+resolve_url() {
+  base=${1%/}
+  rel=$2
+  case "$rel" in
+    ./*|../*) ;;
+    *) printf '%s\n' "$rel"; return 0 ;;
+  esac
+  [ -n "$base" ] || die "cannot resolve relative submodule URL '$rel': superproject has no remote"
+  while :; do
+    case "$rel" in
+      ./*) rel=${rel#./} ;;
+      ../*)
+        rel=${rel#../}
+        case "$base" in
+          *://*/*) base=${base%/*} ;;
+          *://*)   die "relative submodule URL '$2' goes above the host" ;;
+          /*/*)    base=${base%/*} ;;
+          *:*/*)   base=${base%/*} ;;
+          *:?*)    base=${base%%:*}: ;;
+          *)       die "cannot resolve relative submodule URL '$2'" ;;
+        esac
+        ;;
+      *) break ;;
+    esac
+  done
+  case "$base" in
+    *:) printf '%s%s\n' "$base" "$rel" ;;
+    *)  printf '%s/%s\n' "$base" "$rel" ;;
+  esac
+}
+
+submodule_names() {
+  [ -f .gitmodules ] || return 0
+  git config -f .gitmodules --name-only --get-regexp '^submodule\..*\.url$' 2>/dev/null |
+    sed 's/^submodule\.//; s/\.url$//'
+}
+
+# Submodule clones and fetches refuse unknown protocols unless allowed.
+# Allowing `anon` is safe: it can only reach URLs that are in your own map.
+ensure_protocol_allowed() {
+  git config --global --get protocol.anon.allow >/dev/null && return 0
+  git config --global protocol.anon.allow always
+  echo "set protocol.anon.allow=always in global git config (needed for submodules)"
+}
+
+anon_remotes() {  # base
+  for r in $(git remote); do
+    if [ "$r" = origin ]; then
+      anonymize_remote "$r" "$1" auto
+    else
+      anonymize_remote "$r" "$1-$(san "$r")" auto
+    fi
+  done
+}
+
+anon_submodules() {  # base
+  names=$(submodule_names)
+  [ -n "$names" ] || return 0
+  ensure_protocol_allowed
+  sreal=$(super_real_url)
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    path=$(git config -f .gitmodules --get "submodule.$name.path" || true)
+    orig=$(git config --get "submodule.$name.url" || true)
+    a=
+    cfg=$orig
+    case "$cfg" in
+      anon::*)
+        if [ -n "$(lookup "${cfg#anon::}")" ]; then
+          a=${cfg#anon::}
+          echo "submodule.$name.url already anonymized ($cfg)"
+        else
+          cfg=  # e.g. a relative URL git resolved against an anon remote
+        fi
+        ;;
+    esac
+    if [ -z "$a" ]; then
+      if [ -n "$cfg" ]; then
+        real=$cfg
+      else
+        real=$(resolve_url "$sreal" "$(git config -f .gitmodules --get "submodule.$name.url")") || exit 1
+      fi
+      case "$real" in *[[:space:]]*) die "submodule '$name' URL contains whitespace" ;; esac
+      a=$(pick_alias "$1-$(san "$name")" "$real")
+      add_entry "$a" "$real"
+      # Writing submodule.<name>.url would mark an uninitialized submodule
+      # active; keep it inactive until the user runs `git submodule init`.
+      if [ -z "$orig" ] &&
+         ! git config --get "submodule.$name.active" >/dev/null &&
+         ! git config --get submodule.active >/dev/null; then
+        git config "submodule.$name.active" false
+        git config "submodule.$name.anonInactive" true
+      fi
+      git config "submodule.$name.url" "anon::$a"
+      echo "submodule.$name.url -> anon::$a"
+    fi
+    if [ -n "$path" ] && [ -e "$path/.git" ]; then
+      (cd "$path" && echo "entering '$path'" && anon_repo "$a")
+    fi
+  done <<EOF
+$names
+EOF
+  n=$(git config -f .gitmodules --get-regexp '^submodule\..*\.url$' | grep -cv ' anon::' || true)
+  if [ "$n" -gt 0 ]; then
+    echo "note: .gitmodules is tracked and still lists $n submodule URL(s) in plain text"
+  fi
+}
+
+anon_repo() {  # base
+  anon_remotes "$1"
+  anon_submodules "$1"
+}
+
+off_repo() {
+  for r in $(git remote); do
+    restore_key "$r" url
+    restore_key "$r" pushurl
+  done
+  names=$(submodule_names)
+  [ -n "$names" ] || return 0
+  sreal=$(super_real_url)
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    path=$(git config -f .gitmodules --get "submodule.$name.path" || true)
+    cfg=$(git config --get "submodule.$name.url" || true)
+    case "$cfg" in
+      anon::*)
+        if [ "$(git config --get "submodule.$name.anonInactive" || true)" = true ]; then
+          git config --unset "submodule.$name.url"
+          git config --unset "submodule.$name.active" || true
+          git config --unset "submodule.$name.anonInactive"
+          echo "submodule.$name restored (uninitialized)"
+        else
+          real=$(lookup "${cfg#anon::}")
+          [ -n "$real" ] ||
+            real=$(resolve_url "$sreal" "$(git config -f .gitmodules --get "submodule.$name.url")") || exit 1
+          git config "submodule.$name.url" "$real"
+          echo "submodule.$name.url restored"
+        fi
+        ;;
+    esac
+    if [ -n "$path" ] && [ -e "$path/.git" ]; then
+      (cd "$path" && echo "entering '$path'" && off_repo)
+    fi
+  done <<EOF
+$names
+EOF
+}
+
+status_repo() {  # prefix
+  for r in $(git remote); do
+    u=$(git config --get "remote.$r.url" || true)
+    case "$u" in
+      anon::*) echo "$1$r: anonymized ($u)" ;;
+      *) echo "$1$r: NOT anonymized" ;;
+    esac
+  done
+  names=$(submodule_names)
+  [ -n "$names" ] || return 0
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    path=$(git config -f .gitmodules --get "submodule.$name.path" || true)
+    u=$(git config --get "submodule.$name.url" || true)
+    case "$u" in
+      anon::*) echo "$1submodule $name: anonymized ($u)" ;;
+      '') echo "$1submodule $name: not initialized" ;;
+      *) echo "$1submodule $name: NOT anonymized" ;;
+    esac
+    if [ -n "$path" ] && [ -e "$path/.git" ]; then
+      (cd "$path" && status_repo "$1$path/")
+    fi
+  done <<EOF
+$names
+EOF
+}
+
+# update_repo <base>: init + clone submodules one level at a time, so every
+# level is anonymized (and relative URLs resolved) before the next is cloned.
+update_repo() {
+  anon_repo "$1"
+  names=$(submodule_names)
+  [ -n "$names" ] || return 0
+  git submodule --quiet init
+  git submodule --quiet update </dev/null
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    git config --unset "submodule.$name.anonInactive" 2>/dev/null || true
+    path=$(git config -f .gitmodules --get "submodule.$name.path" || true)
+    u=$(git config --get "submodule.$name.url" || true)
+    if [ -n "$path" ] && [ -e "$path/.git" ]; then
+      (cd "$path" && update_repo "${u#anon::}")
+    fi
+  done <<EOF
+$names
+EOF
+}
+
+to_toplevel() {
+  in_repo
+  top=$(git rev-parse --show-toplevel)
+  cd "$top"
+}
+
+origin_alias() {
+  u=$(git config --get remote.origin.url || true)
+  case "$u" in
+    anon::*) [ -z "$(lookup "${u#anon::}")" ] || echo "${u#anon::}" ;;
+  esac
 }
 
 cmd_init() {
@@ -108,45 +361,24 @@ cmd_init() {
       *) die "unknown option '$1'" ;;
     esac
   done
-  in_repo
-  remotes=$(git remote)
-  [ -n "$remotes" ] || die "this repository has no remotes"
-  # Random by default: an alias derived from the repo name would leak it.
+  to_toplevel
+  [ -n "$(git remote)" ] || die "this repository has no remotes"
+  # Reuse the existing alias on re-runs; otherwise random, because an alias
+  # derived from the repo name would leak it.
+  [ -n "$base" ] || base=$(origin_alias)
   [ -n "$base" ] || base="r$(rand_hex)"
   valid_alias "$base"
   ensure_map
-  for r in $remotes; do
-    if [ "$r" = origin ]; then
-      a=$base
-    else
-      a="$base-$(printf '%s' "$r" | tr -c 'A-Za-z0-9._-' '_')"
-    fi
-    anonymize_remote "$r" "$a"
-  done
-  if ! git config --get protocol.anon.allow >/dev/null; then
-    echo "hint: for submodules run: git config --global protocol.anon.allow always"
-  fi
+  anon_repo "$base"
 }
 
-cmd_off() {
-  in_repo
-  for r in $(git remote); do
-    restore_key "$r" url
-    restore_key "$r" pushurl
-  done
-}
-
-cmd_status() {
-  in_repo
-  remotes=$(git remote)
-  [ -n "$remotes" ] || { echo "no remotes"; return 0; }
-  for r in $remotes; do
-    u=$(git config --get "remote.$r.url" || true)
-    case "$u" in
-      anon::*) echo "$r: anonymized ($u)" ;;
-      *) echo "$r: NOT anonymized" ;;
-    esac
-  done
+cmd_update() {
+  to_toplevel
+  [ -n "$(git remote)" ] || die "this repository has no remotes"
+  base=$(origin_alias)
+  [ -n "$base" ] || base="r$(rand_hex)"
+  ensure_map
+  update_repo "$base"
 }
 
 cmd=${1:-}
@@ -154,8 +386,9 @@ cmd=${1:-}
 
 case "$cmd" in
   init)   cmd_init "$@" ;;
-  off)    cmd_off ;;
-  status) cmd_status ;;
+  off)    to_toplevel; off_repo ;;
+  status) to_toplevel; [ -n "$(git remote)$(submodule_names)" ] || echo "no remotes"; status_repo "" ;;
+  update) cmd_update ;;
   add)
     [ $# -ge 1 ] || die "usage: git anon add <alias> [remote]"
     in_repo
@@ -179,10 +412,19 @@ case "$cmd" in
     echo "$real"
     ;;
   clone)
-    [ $# -ge 1 ] || die "usage: git anon clone <alias> [dir]"
+    rec=
+    case "${1:-}" in
+      --recurse-submodules|--recursive) rec=1; shift ;;
+    esac
+    [ $# -ge 1 ] || die "usage: git anon clone [--recurse-submodules] <alias> [dir]"
     valid_alias "$1"
     [ -n "$(lookup "$1")" ] || die "unknown alias '$1'"
-    exec git clone "anon::$1" ${2:+"$2"}
+    dir=${2:-$1}
+    git clone "anon::$1" "$dir"
+    if [ -n "$rec" ]; then
+      cd "$dir"
+      update_repo "$1"
+    fi
     ;;
   version|--version) echo "git-anon $VERSION" ;;
   ''|help|-h|--help) usage ;;

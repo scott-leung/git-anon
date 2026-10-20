@@ -73,14 +73,24 @@ git anon off        # 恢复真实地址
 - `git anon init [--alias 名字]`：默认生成随机别名（`r` + 8 位十六进制），不会从仓库名推导，避免泄露；`origin` 用该别名，其它 remote 用 `名字-<remote>`。可重复执行。
 - `git anon add <别名> [remote]` / `git anon restore [remote]`：单个 remote 的匿名化与恢复。
 - `git anon list`：列出别名（不显示地址）；`git anon show <别名>`：显示真实地址。
-- `git anon clone <别名> [目录]`：通过别名克隆。换电脑时把 map 文件拷过去即可。
+- `git anon clone [--recurse-submodules] <别名> [目录]`：通过别名克隆。换电脑时把 map 文件拷过去即可。
+- `git anon update`：相当于 `git submodule update --init --recursive`，但每一层子模块在克隆下一层之前都会先完成匿名化。
+
+### 子模块
+
+`git anon init` 会递归处理子模块：改写 `submodule.<name>.url`，以及每个已检出子模块自己的 remote，嵌套多少层都会处理。相对 URL（如 `../lib.git`）会先按真实的父仓库地址解析，所以能正常工作。还没初始化的子模块保持未初始化状态，之后照常 `git submodule update --init` 即可。
+
+- 首次处理带子模块的仓库时，会在全局 git 配置中设置 `protocol.anon.allow=always`，否则 git 会拒绝子模块使用未知协议。这样做是安全的：`anon::` 只能访问你自己 map 里的地址。
+- 嵌套子模块用了相对 URL 时，请用 `git anon update`（或 `git anon clone --recurse-submodules`）代替 `git submodule update --init --recursive`，否则原生 git 会基于 `anon::…` 解析相对地址而失败。
+- `.gitmodules` 是提交进仓库、所有人共享的文件，git-anon 不会修改它，其中的 URL 仍然可见；`git anon init` 会提示数量。
+- `git submodule sync` 会把 `.gitmodules` 里的地址写回 `.git/config`，之后需要重新执行 `git anon init`。
 
 ## 局限
 
 - 只隐藏**远程地址**。分支名、commit 信息、文件路径和内容仍然可以被读取仓库的工具看到。
 - git 运行期间，本机进程仍可通过 `ps`、`GIT_TRACE=1` 看到真实地址。
 - `gh`、IDE 的"在 GitHub 上打开"等依赖 remote 识别托管平台的功能会失效，可临时 `git anon off` 或用 `gh -R owner/repo`。
-- 子模块需要执行 `git config --global protocol.anon.allow always`。
+- 提交进仓库的 `.gitmodules` 里的子模块地址仍然可见（见上文"子模块"）。
 
 ## 开发
 

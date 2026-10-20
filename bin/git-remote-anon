@@ -28,7 +28,8 @@ esac
 [ -r "$MAP" ] || die "map file not found: $MAP"
 
 real=$(awk -v k="$alias" '!/^[[:space:]]*(#|$)/ && $1 == k { print $2; exit }' "$MAP")
-[ -n "$real" ] || die "unknown alias '$alias'"
+[ -n "$real" ] || die "unknown alias '$alias'
+hint: for submodules with relative URLs, use \`git anon update\` instead of \`git submodule update --init --recursive\`"
 
 case "$real" in
   https://*) exec git remote-https "$remote" "$real" ;;
