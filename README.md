@@ -19,6 +19,47 @@ origin  anon::r3f9a1c07 (push)
 $ git pull && git push        # works exactly as before
 ```
 
+## Background
+
+Closed-source AI coding agents such as Claude Code or Codex read your
+repository's git metadata — branch, recent commits, and the remote URL — to
+build context, and may report the remote URL with their telemetry. Some
+releases offer no switch to turn this off. The remote URL is one of the most
+identifying things on your machine: it names your company's git host, your
+organization, and every private project you work on.
+
+git-anon makes the remote URL that any tool can see an opaque alias, while
+git itself still reaches the real server. Nothing about your daily workflow
+changes.
+
+## Approaches compared
+
+Several ways to hide the remote were evaluated before settling on this one:
+
+| Approach | Hides host | Hides org/repo | git works everywhere | Holds no matter how the tool reads the URL¹ | Setup |
+|---|:-:|:-:|:-:|:-:|---|
+| Edit `/etc/hosts` | ✗ | ✗ | ✓ | ✗ | — |
+| `url.<real>.insteadOf=<fake>` | ✗² | ✗² | ✓ | ✗ | per host |
+| SSH `Host` alias in `~/.ssh/config` | ✓ | ✗ | ✓ | ✓ | per host |
+| Fake URL injected via `GIT_CONFIG_*` env only for the agent | ✓ | ✓ | ✗³ | ✗ | once |
+| **Remote helper (git-anon)** | **✓** | **✓** | **✓** | **✓** | **one command per repo** |
+
+¹ A tool may run `git remote get-url`, `git config`, or parse `.git/config` directly.  
+² `.git/config` holds the fake URL, but `git remote -v` / `get-url` print the rewritten real one.  
+³ fetch/push started by the agent go to the fake address and fail.
+
+Why `/etc/hosts` does not help: it only changes which IP a hostname resolves
+to. The tool reports the URL *string* from your git config, and that string is
+unchanged.
+
+git-anon uses git's own extension point, remote helpers: the URL stored in
+the repository is `anon::<random alias>`, and the only place the real URL
+exists is a local file (`~/.config/git-anon/map`, mode `600`). Whichever way a
+tool reads the remote, it gets the alias; whenever git needs the network, the
+helper resolves the alias and connects with your normal SSH keys or
+credentials. The default alias is random, so it does not leak the repository
+name either.
+
 ## How it works
 
 git treats a URL like `anon::<alias>` as "ask the program `git-remote-anon`".
