@@ -41,7 +41,7 @@ case "$real" in
   *[[:space:]\'\"\\\`\$\;\&\|\<\>]*) die "alias '$alias': unsupported character in URL" ;;
 esac
 
-host= port= path=
+host=; port=; path=
 case "$real" in
   ssh://*|git+ssh://*|ssh+git://*)
     rest=${real#*://}
