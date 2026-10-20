@@ -61,6 +61,14 @@ curl -fsSL https://raw.githubusercontent.com/scott-leung/git-anon/main/install.s
 
 或在源码目录执行 `make install`。默认装到 `~/.local/bin`（可用 `BINDIR=…` 修改），该目录需要在 `PATH` 中。卸载：`npm uninstall -g git-anon` 或 `sh install.sh --uninstall`。
 
+### Windows
+
+在安装了 [Git for Windows](https://gitforwindows.org/) 的 Windows 上，PowerShell、cmd、Git Bash 都可以使用。用 `npm install -g git-anon` 安装（或在 Git Bash 里运行 `install.sh`），之后照常执行 `git anon …`。`C:\repos\x.git` 这类本地路径也可以作为 remote。
+
+- git 用自带的 `sh` 运行脚本，只有通过启动器 `<Git>\cmd\git.exe` 启动时才找得到它；Git for Windows 安装程序放进 `PATH` 的就是这个。如果 `PATH` 直接指向 `<Git>\mingw64\bin\git.exe` 或 `<Git>\libexec\git-core\git.exe`，`git anon` 会报 "appears to be a git command, but we were not able to execute it"（git 的其他功能也会异常）。
+- 请用 `git anon`，不要直接运行 `git-anon`：后者是 npm 生成的启动脚本，需要 `PATH` 里有 `sh`；`git anon` 则由 git 负责调用。
+- HTTPS 和 SSH 沿用你原有的 git 配置，配置本身有问题（比如设置了不支持的 `http.sslBackend`）时，用不用 git-anon 都会同样报错。
+
 ## 使用
 
 ```sh
@@ -94,6 +102,6 @@ git anon off        # 恢复真实地址
 
 ## 开发
 
-`make test` 运行离线端到端测试，`make lint` 运行 shellcheck。CI 覆盖 Ubuntu（dash）、macOS 和 Alpine（busybox ash）。CI 还会在 Ubuntu 和 macOS 上安装 npm 包做冒烟测试。
+`make test` 运行离线端到端测试，`make lint` 运行 shellcheck。CI 覆盖 Ubuntu（dash）、macOS、Windows（Git for Windows）和 Alpine（busybox ash）。CI 还会在 Ubuntu 和 macOS 上安装 npm 包做冒烟测试。
 
 发版：同时修改 `bin/git-anon` 的 `VERSION` 和 `package.json` 的 `version`，推送 `vX.Y.Z` 标签。Release 工作流会校验版本、跑测试、创建 GitHub Release 并发布到 npm（带 provenance，使用 npm trusted publishing 或仓库 secret `NPM_TOKEN`）。

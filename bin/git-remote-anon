@@ -36,14 +36,9 @@ case "$real" in
   http://*)  exec git remote-http  "$remote" "$real" ;;
 esac
 
-# The path ends up inside a remote shell command; refuse anything that could
-# break out of the single quotes we put around it.
-case "$real" in
-  *[[:space:]\'\"\\\`\$\;\&\|\<\>]*) die "alias '$alias': unsupported character in URL" ;;
-esac
-
 host=; port=; path=
 case "$real" in
+  [A-Za-z]:[/\\]*) path=$real ;;  # Windows drive path, e.g. C:/repos/x.git
   ssh://*|git+ssh://*|ssh+git://*)
     rest=${real#*://}
     host=${rest%%/*}
@@ -58,6 +53,15 @@ case "$real" in
   *)        die "alias '$alias': unsupported URL form" ;;
 esac
 case "$host" in -*) die "alias '$alias': invalid host" ;; esac
+
+# For SSH the path ends up inside a remote shell command; refuse anything
+# that could break out of the single quotes we put around it. Local paths
+# are passed as a plain argument and need no such check.
+if [ -n "$host" ]; then
+  case "$real" in
+    *[[:space:]\'\"\\\`\$\;\&\|\<\>]*) die "alias '$alias': unsupported character in URL" ;;
+  esac
+fi
 
 # Helper protocol: advertise `connect`, then hand stdin/stdout to the service.
 # `read` consumes the pipe byte by byte, so nothing meant for the service is lost.
@@ -77,6 +81,7 @@ esac
 printf '\n'
 
 if [ -z "$host" ]; then
+  case "$path" in -*) die "alias '$alias': invalid path" ;; esac
   exec git "${service#git-}" "$path"
 fi
 
