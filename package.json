@@ -1,6 +1,6 @@
 {
   "name": "git-anon",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Hide real git remote URLs from tools that read them (AI agents, IDE plugins, telemetry) while git keeps working",
   "keywords": [
     "git",
