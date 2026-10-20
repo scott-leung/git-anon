@@ -7,6 +7,15 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 T=$(mktemp -d "${TMPDIR:-/tmp}/git-anon-test.XXXXXX")
 trap 'rm -rf "$T"' EXIT
 
+# Git for Windows: use C:/... paths everywhere so git stores exactly the
+# strings the tests compare against (MSYS would rewrite /tmp/... arguments).
+WINDOWS=
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) WINDOWS=1; T=$(cygpath -m "$T") ;;
+esac
+TP=$T
+[ -z "$WINDOWS" ] || TP=$(cygpath -u "$T")   # for PATH, which is ':'-separated
+
 # Isolate from the user's git config and alias map.
 export HOME="$T/home" GIT_CONFIG_NOSYSTEM=1 GIT_ANON_MAP="$T/home/.config/git-anon/map"
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
@@ -20,10 +29,11 @@ cat > "$T/fakebin/ssh" <<EOF
 echo "\$*" >> "$T/ssh.log"
 while [ "\$1" = "-p" ] || [ "\$1" = "-o" ]; do shift 2; done
 shift
-exec sh -c "\$*"
+# Play the server side: on Windows, ssh://host/C:/x means the local path C:/x.
+exec sh -c "\$(printf '%s' "\$*" | sed "s#'/\\([A-Za-z]:\\)#'\\1#")"
 EOF
 chmod +x "$T/fakebin/ssh"
-PATH="$ROOT/bin:$T/fakebin:$PATH"
+PATH="$ROOT/bin:$TP/fakebin:$PATH"
 export PATH
 
 pass=0
@@ -75,8 +85,10 @@ check "origin url is anon::" sh -c "git -C '$W' remote get-url origin | grep -q 
 check "upstream url is anon::" sh -c "git -C '$W' remote get-url upstream | grep -q '^anon::r[0-9a-f]\{8\}-upstream$'"
 check_not ".git/config has no real path" grep -q "$T" "$W/.git/config"
 check_not "remote -v has no real path" sh -c "git -C '$W' remote -v | grep -q '$T'"
-check "map is mode 600" sh -c "ls -l '$GIT_ANON_MAP' | grep -q '^-rw-------'"
-check "map dir is mode 700" sh -c "ls -ld '$(dirname "$GIT_ANON_MAP")' | grep -q '^drwx------'"
+if [ -z "$WINDOWS" ]; then  # no POSIX modes on Windows
+  check "map is mode 600" sh -c "ls -l '$GIT_ANON_MAP' | grep -q '^-rw-------'"
+  check "map dir is mode 700" sh -c "ls -ld '$(dirname "$GIT_ANON_MAP")' | grep -q '^drwx------'"
+fi
 check "init is idempotent" sh -c "cd '$W' && git anon init | grep -q 'already anonymized'"
 check "status reports anonymized" sh -c "cd '$W' && git anon status | grep -q 'origin: anonymized'"
 check_not "list never prints URLs" sh -c "git anon list | grep -q '$T'"
@@ -113,7 +125,8 @@ check "init --alias=NAME" sh -c "[ \"\$(git -C '$W' config remote.origin.url)\" 
 check "show prints real url" sh -c "[ \"\$(git anon show named)\" = '$T/remote.git' ]"
 
 echo "# ssh transports (fake ssh)"
-printf 'scp1 git@fakehost:%s\nurl1 ssh://git@fakehost:2222%s\n' "$T/remote.git" "$T/remote.git" >> "$GIT_ANON_MAP"
+# ssh:// paths always start with "/" (on Windows: /C:/..., see fake ssh)
+printf 'scp1 git@fakehost:%s\nurl1 ssh://git@fakehost:2222/%s\n' "$T/remote.git" "${T#/}/remote.git" >> "$GIT_ANON_MAP"
 for a in scp1 url1; do
   git -C "$W" remote set-url origin "anon::$a"
   commit "$W" "$a"
@@ -121,7 +134,7 @@ for a in scp1 url1; do
   check "$a: clone" git clone -q "anon::$a" "$T/clone-$a"
 done
 check "scp form argv" grep -qxF "git@fakehost git-receive-pack '$T/remote.git'" "$T/ssh.log"
-check "ssh:// form argv with port" grep -qxF -- "-p 2222 git@fakehost git-upload-pack '$T/remote.git'" "$T/ssh.log"
+check "ssh:// form argv with port" grep -qxF -- "-p 2222 git@fakehost git-upload-pack '/${T#/}/remote.git'" "$T/ssh.log"
 : > "$T/ssh.log"
 check "GIT_SSH_COMMAND honored" env GIT_SSH_COMMAND="ssh -o X=1" git ls-remote anon::scp1
 check "GIT_SSH_COMMAND argv" grep -qxF -- "-o X=1 git@fakehost git-upload-pack '$T/remote.git'" "$T/ssh.log"

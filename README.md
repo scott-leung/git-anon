@@ -91,7 +91,8 @@ curl -fsSL https://raw.githubusercontent.com/scott-leung/git-anon/main/install.s
 The script installs into `~/.local/bin` (override with `BINDIR=…`), which must
 be on your `PATH`; `make install` does the same from a checkout. Uninstall with
 `npm uninstall -g git-anon` or `sh install.sh --uninstall`.
-Requires git and a POSIX shell (macOS / Linux).
+Requires git and a POSIX shell: macOS, Linux, or Windows with
+[Git for Windows](https://gitforwindows.org/) (see [Windows](#windows)).
 
 ## Usage
 
@@ -138,6 +139,23 @@ Submodules you have not initialized stay uninitialized; `git submodule update
 - `git submodule sync` copies the URLs from `.gitmodules` back into
   `.git/config`. Run `git anon init` again afterwards.
 
+## Windows
+
+Works from PowerShell, cmd and Git Bash with Git for Windows. Install with
+`npm install -g git-anon` (or run `install.sh` in Git Bash), then use
+`git anon …` as usual. Local paths such as `C:\repos\x.git` work as remotes.
+
+- git runs the scripts with its bundled `sh`, which it only finds when started
+  through its launcher, `<Git>\cmd\git.exe` — that is what the Git for
+  Windows installer puts on `PATH`. If `PATH` points straight at
+  `<Git>\mingw64\bin\git.exe` or `<Git>\libexec\git-core\git.exe`,
+  `git anon` fails with "appears to be a git command, but we were not able to
+  execute it" (and other git features misbehave too).
+- Run `git anon`, not `git-anon`: the npm shims for the bare name need `sh` on
+  `PATH`, while `git anon` goes through git.
+- HTTPS and SSH use your normal git setup, so a broken setup (e.g. an
+  unsupported `http.sslBackend`) fails the same way with or without git-anon.
+
 ## Limitations
 
 - Only the **remote URL** is hidden. Branch names, commit messages, file paths
@@ -165,8 +183,9 @@ make test   # offline end-to-end tests (local bare repos + fake ssh)
 make lint   # shellcheck
 ```
 
-CI runs the tests on Ubuntu (dash), macOS (bash as sh) and Alpine
-(busybox ash), and installs the npm tarball on Ubuntu and macOS.
+CI runs the tests on Ubuntu (dash), macOS (bash as sh), Windows (Git for
+Windows) and Alpine (busybox ash), and installs the npm tarball on Ubuntu,
+macOS and Windows (driven from PowerShell).
 
 Releasing: bump `VERSION` in `bin/git-anon` and `version` in `package.json`,
 then push a tag `vX.Y.Z`. The release workflow verifies versions, runs the
