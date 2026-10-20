@@ -11,7 +11,7 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: check version matches tag
         run: |
           v=$(sed -n 's/^VERSION=//p' bin/git-anon)
