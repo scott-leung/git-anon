@@ -11,6 +11,8 @@ agents, IDE plugins, telemetry — without changing how you use git.
 ```console
 $ git anon init
 remote.origin.url -> anon::r3f9a1c07
+note: reflogs (.git/logs) may still contain the real URL, e.g. "clone: from ...";
+      run `git anon init --scrub-reflog` to remove it (can be slow on repos with many refs)
 
 $ git remote -v
 origin  anon::r3f9a1c07 (fetch)
@@ -21,9 +23,9 @@ $ git pull && git push        # works exactly as before
 
 ## Background
 
-Claude Code 2.1.3xx reads your
-repository's git metadata — branch, recent commits, and the remote URL — to
-build context, and may report the remote URL with its telemetry. Some
+Claude Code 2.1.3xx reads your repository's git metadata — branch, recent
+commits, and the remote URL — to build context, and may report the remote URL
+with its telemetry. Some
 releases offer no switch to turn this off. The remote URL is one of the most
 identifying things on your machine: it names your company's git host, your
 organization, and every private project you work on.
@@ -70,7 +72,7 @@ hands the connection to git's own transport:
 |-----------------------------------|-------------------------------------|
 | `https://…`, `http://…`           | `git remote-https` / `remote-http`  |
 | `git@host:path`, `ssh://host/path` | `ssh` (honors `GIT_SSH_COMMAND`, `core.sshCommand`, `GIT_SSH`) |
-| `/path`, `file:///path`           | local `git upload-pack` / `receive-pack` |
+| `/path`, `file:///path`, `C:\path` | local `git upload-pack` / `receive-pack` |
 
 So `.git/config`, `git remote -v` and `git remote get-url` contain only the
 alias — no host, no org, no repo name. Your SSH keys, `~/.ssh/config` and
@@ -98,7 +100,7 @@ Requires git and a POSIX shell: macOS, Linux, or Windows with
 
 ```sh
 cd your-repo
-git anon init                  # anonymize every remote (one command)
+git anon init                  # anonymize every remote and submodule (one command)
 git anon status                # what is anonymized
 git anon off                   # put the real URLs back
 ```
@@ -137,6 +139,8 @@ git anon init --scrub-reflog
   `.git/logs`, so it can take a while on repositories with very many refs.
 - Repositories using the reftable backend store reflogs in binary form; those
   are not touched.
+- Upgrading from 0.2.x / 0.3.x: those versions scrubbed reflogs on every
+  `init`; since 0.4.0 it only happens with `--scrub-reflog`.
 
 ### Submodules
 
@@ -193,7 +197,7 @@ Works from PowerShell, cmd and Git Bash with Git for Windows. Install with
 
 - The map may contain credentials if your URLs do (`https://token@…`); it is
   created with mode `600` in a `700` directory.
-- Aliases are restricted to `[A-Za-z0-9._-]`, and URLs containing whitespace,
+- Aliases are restricted to `[A-Za-z0-9._-]`, and SSH URLs containing whitespace,
   quotes or shell metacharacters are refused before they reach `ssh`.
 
 ## Development

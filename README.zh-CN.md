@@ -1,5 +1,8 @@
 # git-anon
 
+[![CI](https://github.com/scott-leung/git-anon/actions/workflows/ci.yml/badge.svg)](https://github.com/scott-leung/git-anon/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/git-anon)](https://www.npmjs.com/package/git-anon)
+
 [English](README.md)
 
 把 git 远程仓库的真实地址藏起来，不让读取它的工具（AI 编码助手、IDE 插件、遥测上报等）拿到，同时日常使用 git 的方式完全不变。
@@ -7,6 +10,8 @@
 ```console
 $ git anon init
 remote.origin.url -> anon::r3f9a1c07
+note: reflogs (.git/logs) may still contain the real URL, e.g. "clone: from ...";
+      run `git anon init --scrub-reflog` to remove it (can be slow on repos with many refs)
 
 $ git remote -v
 origin  anon::r3f9a1c07 (fetch)
@@ -43,7 +48,7 @@ git-anon 用的是 git 自带的扩展机制 remote helper：仓库里存的 URL
 
 ## 原理
 
-git 遇到 `anon::<别名>` 形式的地址时，会调用 `git-remote-anon` 这个程序处理。它在 `~/.config/git-anon/map`（权限 `600`）里查出真实地址，HTTPS 交给 git 自带的 helper，SSH 和本地路径直接调用 `ssh` / `git upload-pack`（支持 `GIT_SSH_COMMAND`、`core.sshCommand`）。
+git 遇到 `anon::<别名>` 形式的地址时，会调用 `git-remote-anon` 这个程序处理。它在 `~/.config/git-anon/map`（权限 `600`）里查出真实地址，HTTPS 交给 git 自带的 helper；SSH 直接调用 `ssh`（支持 `GIT_SSH_COMMAND`、`core.sshCommand`、`GIT_SSH`）；本地路径（`/path`、`file:///path`、`C:\path`）直接调用 `git upload-pack` / `receive-pack`。
 
 因此 `.git/config`、`git remote -v`、`git remote get-url` 里只有别名，看不到域名、组织名和仓库名。SSH key、`~/.ssh/config`、凭据管理器都照常工作。
 
@@ -59,7 +64,7 @@ npm install -g git-anon
 curl -fsSL https://raw.githubusercontent.com/scott-leung/git-anon/main/install.sh | sh
 ```
 
-或在源码目录执行 `make install`。默认装到 `~/.local/bin`（可用 `BINDIR=…` 修改），该目录需要在 `PATH` 中。卸载：`npm uninstall -g git-anon` 或 `sh install.sh --uninstall`。
+或在源码目录执行 `make install`。默认装到 `~/.local/bin`（可用 `BINDIR=…` 修改），该目录需要在 `PATH` 中。卸载：`npm uninstall -g git-anon` 或 `sh install.sh --uninstall`。需要 git 和 POSIX shell：macOS、Linux，或装有 Git for Windows 的 Windows。
 
 ### Windows
 
@@ -73,16 +78,19 @@ curl -fsSL https://raw.githubusercontent.com/scott-leung/git-anon/main/install.s
 
 ```sh
 cd 你的仓库
-git anon init       # 一条命令匿名化当前仓库的所有 remote
+git anon init       # 一条命令匿名化当前仓库的所有 remote 和子模块
 git anon status     # 查看状态
 git anon off        # 恢复真实地址
 ```
 
-- `git anon init [--alias 名字] [--scrub-reflog]`：默认生成随机别名（`r` + 8 位十六进制），不会从仓库名推导，避免泄露；`origin` 用该别名，其它 remote 用 `名字-<remote>`。可重复执行。
+- `git anon init [--alias 名字] [--scrub-reflog]`：匿名化所有 remote 和子模块（递归）。默认生成随机别名（`r` + 8 位十六进制），不会从仓库名推导，避免泄露；`origin` 用该别名，其它 remote 用 `名字-<remote>`，子模块用 `名字-<子模块名>`。可重复执行。`--scrub-reflog` 见下文"reflog"。
+- `git anon off` / `git anon status`：恢复 / 查看当前仓库所有 remote 和子模块。
 - `git anon add <别名> [remote]` / `git anon restore [remote]`：单个 remote 的匿名化与恢复。
 - `git anon list`：列出别名（不显示地址）；`git anon show <别名>`：显示真实地址。
 - `git anon clone [--recurse-submodules] <别名> [目录]`：通过别名克隆。换电脑时把 map 文件拷过去即可。
 - `git anon update`：相当于 `git submodule update --init --recursive`，但每一层子模块在克隆下一层之前都会先完成匿名化。
+
+设置了 `pushurl` 的话，会以 `<别名>.push` 一并匿名化。
 
 ### reflog
 
@@ -96,6 +104,7 @@ git anon init --scrub-reflog
 - 每个文件都在持有该 ref 的 `.lock` 时原子替换（与 git 自身做法一致）；正被其他 git 进程锁住的 ref 会跳过并给出警告。
 - 覆盖关联的 worktree 和子模块。由于要改写 `.git/logs` 下的文件，ref 非常多的仓库可能耗时较长。
 - 使用 reftable 后端的仓库以二进制格式存储 reflog，不会被处理。
+- 从 0.2.x / 0.3.x 升级：这两个版本每次 `init` 都会清理 reflog；从 0.4.0 起只有加 `--scrub-reflog` 才会清理。
 
 ### 子模块
 
@@ -112,9 +121,19 @@ git anon init --scrub-reflog
 - git 运行期间，本机进程仍可通过 `ps`、`GIT_TRACE=1` 看到真实地址。
 - `gh`、IDE 的"在 GitHub 上打开"等依赖 remote 识别托管平台的功能会失效，可临时 `git anon off` 或用 `gh -R owner/repo`。
 - 提交进仓库的 `.gitmodules` 里的子模块地址仍然可见（见上文"子模块"）。
+- 一个 remote 配了多个 `url` 时需要手动处理。
+
+## 安全说明
+
+- 如果你的 URL 里带有凭据（如 `https://token@…`），map 文件里也会有；它以 `600` 权限创建在 `700` 权限的目录中。
+- 别名只允许 `[A-Za-z0-9._-]`；SSH 地址里含空白、引号或 shell 元字符时会被拒绝，不会传给 `ssh`。
 
 ## 开发
 
-`make test` 运行离线端到端测试，`make lint` 运行 shellcheck。CI 覆盖 Ubuntu（dash）、macOS、Windows（Git for Windows）和 Alpine（busybox ash）。CI 还会在 Ubuntu 和 macOS 上安装 npm 包做冒烟测试。
+`make test` 运行离线端到端测试，`make lint` 运行 shellcheck。CI 覆盖 Ubuntu（dash）、macOS、Windows（Git for Windows）和 Alpine（busybox ash）。CI 还会在 Ubuntu、macOS 和 Windows（通过 PowerShell）上安装 npm 包做冒烟测试。
 
 发版：同时修改 `bin/git-anon` 的 `VERSION` 和 `package.json` 的 `version`，推送 `vX.Y.Z` 标签。Release 工作流会校验版本、跑测试、创建 GitHub Release 并发布到 npm（带 provenance，使用 npm trusted publishing 或仓库 secret `NPM_TOKEN`）。
+
+## License
+
+MIT
