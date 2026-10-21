@@ -241,6 +241,7 @@ check "scp-style URL scrubbed in user-less form too" sh -c "! grep -rqF 'fakehos
 git clone -q "$S/super.git" "$T/tr5"
 : > "$T/tr5/.git/HEAD.lock"
 (cd "$T/tr5" && git anon init --scrub-reflog) > "$T/tr5.out" 2>&1
+check "locked ref: init still succeeds" sh -c "cd '$T/tr5' && rm -f .git/HEAD.lock && git anon off >/dev/null && : > .git/HEAD.lock && : > .git/refs/heads/main.lock && git anon init --scrub-reflog >/dev/null 2>&1; rc=\$?; rm -f .git/refs/heads/main.lock; [ \$rc -eq 0 ]"
 check "locked ref: skipped with a warning" grep -q "HEAD.lock is locked" "$T/tr5.out"
 check "locked ref: its reflog left intact" grep -qF "$S/super.git" "$T/tr5/.git/logs/HEAD"
 check "locked ref: foreign lock not removed" test -e "$T/tr5/.git/HEAD.lock"
@@ -299,7 +300,7 @@ git clone -q "$S/nested.git" "$N/node_modules/pkg"
 git -C "$N" worktree add -q "$N/.wt/x" -b wtx 2>/dev/null
 git clone -q "$S/nested.git" "$N/.wt/x/third_party/c"
 nested_leaks() {  # config files under $N (outside node_modules) still holding a real URL
-  find "$N" -name node_modules -prune -o -type f -name config -print | xargs grep -lF "$S" 2>/dev/null || true
+  find "$N" -name node_modules -prune -o -type f -name config -exec grep -lF "$S" {} + 2>/dev/null || true
 }
 (cd "$N" && git anon init) > "$T/n0.out" 2>&1
 check "default: nested repos left alone" sh -c "git -C '$N/third_party/a' remote get-url origin | grep -qF '$S'"
@@ -319,7 +320,7 @@ check "status --nested lists nested repos" sh -c "cd '$N' && git anon status --n
 check "status --nested: nothing NOT anonymized (outside node_modules)" sh -c "cd '$N' && ! git anon status --nested | grep NOT | grep -qv node_modules"
 (cd "$N" && git anon off --nested) >/dev/null 2>&1
 check "off --nested restores nested repos" sh -c "git -C '$N/third_party/a/deep/b' remote get-url origin | grep -qF '$S'"
-check "off --nested: no anon:: left" sh -c "! find '$N' -name node_modules -prune -o -type f -name config -print | xargs grep -l 'anon::' | grep -q ."
+check "off --nested: no anon:: left" sh -c "! find '$N' -name node_modules -prune -o -type f -name config -exec grep -l 'anon::' {} + | grep -q ."
 check_not "unknown option to status rejected" sh -c "cd '$N' && git anon status --bogus"
 
 echo "# rejection"

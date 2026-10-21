@@ -129,7 +129,10 @@ scrub_dir() {
         "$1"/logs/*) lock="$1/${f#"$1"/logs/}.lock" ;;  # the ref's lock, as git uses
         *) lock= ;;
       esac
-      rewrite_file "$f" "$2" "$3" "$4" "$lock" && echo "scrubbed real URL from ${f#"$1"/}"
+      # A skipped (locked) file only warns; it must not fail the whole run.
+      if rewrite_file "$f" "$2" "$3" "$4" "$lock"; then
+        echo "scrubbed real URL from ${f#"$1"/}"
+      fi
     done
 }
 
