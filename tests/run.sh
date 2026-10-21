@@ -272,6 +272,56 @@ echo "     (init --scrub-reflog with 10000 reflog files: ${secs}s)"
 check "10000 reflog files scrubbed in under 60s" test "$secs" -lt 60
 check "10000 reflog files: real URL gone" sh -c "! grep -rqF '$S/super.git' '$T/perf/.git/logs'"
 
+echo "# leftover submodule state (deinit'ed / renamed / removed submodules)"
+git clone -q --recurse-submodules "$S/super.git" "$T/st" 2>/dev/null
+git -C "$T/st" submodule --quiet deinit -f rel                 # keeps .git/modules/rel (+ nested)
+git -C "$T/st" config submodule.old/renamed.url "$S/sub-abs.git" # not in .gitmodules any more
+check "precondition: module git dir of deinit'ed submodule holds real URL" grep -qF "$S" "$T/st/.git/modules/rel/config"
+check "status reports un-checked-out module git dir" sh -c "cd '$T/st' && git anon status | grep -q 'submodule git dir rel: NOT anonymized'"
+(cd "$T/st" && git anon init) > "$T/st.out" 2>&1
+check "leftovers: no real URL in any config under .git" test -z "$(leaks "$T/st")"
+check "leftovers: stale submodule.<name>.url anonymized" sh -c "git -C '$T/st' config submodule.old/renamed.url | grep -q '^anon::'"
+check "leftovers: nested module dir anonymized" sh -c "git config -f '$T/st/.git/modules/rel/modules/nested/config' remote.origin.url | grep -q '^anon::'"
+check "leftovers: submodule.*.url inside a module dir anonymized" sh -c "git config -f '$T/st/.git/modules/rel/config' submodule.nested.url | grep -q '^anon::'"
+check "leftovers: status clean afterwards" sh -c "cd '$T/st' && ! git anon status | grep -q NOT"
+check "leftovers: re-init re-activates deinit'ed submodule" sh -c "cd '$T/st' && git submodule --quiet update --init rel && git -C rel remote get-url origin | grep -q '^anon::'"
+(cd "$T/st" && git anon off) >/dev/null 2>&1
+check "leftovers: off restores stale key" sh -c "[ \"\$(git -C '$T/st' config submodule.old/renamed.url)\" = '$S/sub-abs.git' ]"
+check "leftovers: off restores module dirs" sh -c "! find '$T/st/.git' -name config -exec grep -l 'anon::' {} + | grep -q ."
+
+echo "# nested independent repos (not submodules)"
+N=$T/nest
+git clone -q "$S/sub-abs.git" "$N"
+git clone -q "$S/nested.git" "$N/third_party/a"
+git clone -q "$S/sub-abs.git" "$N/third_party/a/deep/b"
+git clone -q --recurse-submodules "$S/super.git" "$N/third_party/withsub" 2>/dev/null
+git clone -q "$S/nested.git" "$N/node_modules/pkg"
+git -C "$N" worktree add -q "$N/.wt/x" -b wtx 2>/dev/null
+git clone -q "$S/nested.git" "$N/.wt/x/third_party/c"
+nested_leaks() {  # config files under $N (outside node_modules) still holding a real URL
+  find "$N" -name node_modules -prune -o -type f -name config -print | xargs grep -lF "$S" 2>/dev/null || true
+}
+(cd "$N" && git anon init) > "$T/n0.out" 2>&1
+check "default: nested repos left alone" sh -c "git -C '$N/third_party/a' remote get-url origin | grep -qF '$S'"
+check "default: note about nested repos printed" grep -q "nested git repo(s) that are not submodules" "$T/n0.out"
+check "default: note mentions --nested" grep -q -- "--nested" "$T/n0.out"
+(cd "$N" && git anon init --nested) > "$T/n1.out" 2>&1
+check "--nested warns it walks the tree" grep -q "^warning: --nested" "$T/n1.out"
+check "--nested: no real URL in any config (incl. deep, worktree, submodules)" test -z "$(nested_leaks)"
+check "--nested: deep nested repo anonymized" sh -c "git -C '$N/third_party/a/deep/b' remote get-url origin | grep -q '^anon::'"
+check "--nested: repo inside a worktree anonymized" sh -c "git -C '$N/.wt/x/third_party/c' remote get-url origin | grep -q '^anon::'"
+check "--nested: submodule of a nested repo anonymized" sh -c "git -C '$N/third_party/withsub/rel/nested' remote get-url origin | grep -q '^anon::'"
+check "--nested: node_modules skipped" sh -c "git -C '$N/node_modules/pkg' remote get-url origin | grep -qF '$S'"
+check "--nested: aliases are random, not path-derived" sh -c "! git -C '$N/third_party/a' remote get-url origin | grep -q third"
+check "--nested: fetch in nested repo works" git -C "$N/third_party/a" fetch -q origin
+check "--nested: rerun is idempotent" sh -c "cd '$N' && git anon init --nested 2>/dev/null | grep -q 'already anonymized' && ! git anon init --nested 2>/dev/null | grep -q -- ' -> anon::'"
+check "status --nested lists nested repos" sh -c "cd '$N' && git anon status --nested | grep -q '^third_party/a/origin: anonymized'"
+check "status --nested: nothing NOT anonymized (outside node_modules)" sh -c "cd '$N' && ! git anon status --nested | grep NOT | grep -qv node_modules"
+(cd "$N" && git anon off --nested) >/dev/null 2>&1
+check "off --nested restores nested repos" sh -c "git -C '$N/third_party/a/deep/b' remote get-url origin | grep -qF '$S'"
+check "off --nested: no anon:: left" sh -c "! find '$N' -name node_modules -prune -o -type f -name config -print | xargs grep -l 'anon::' | grep -q ."
+check_not "unknown option to status rejected" sh -c "cd '$N' && git anon status --bogus"
+
 echo "# rejection"
 check_not "invalid alias rejected" git ls-remote "anon::../etc"
 check_not "unknown alias rejected" git ls-remote anon::nope

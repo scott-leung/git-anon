@@ -107,9 +107,9 @@ git anon off                   # put the real URLs back
 
 | Command | |
 |---|---|
-| `git anon init [--alias NAME] [--scrub-reflog]` | Anonymize all remotes and submodules (recursively). Default alias is random (`r` + 8 hex) so it reveals nothing; `origin` gets `NAME`, other remotes `NAME-<remote>`, submodules `NAME-<submodule>`. Idempotent. `--scrub-reflog`: see [Reflogs](#reflogs). |
-| `git anon off` | Restore all remotes and submodules of the current repo. |
-| `git anon status` | Show which remotes and submodules are anonymized. |
+| `git anon init [--alias NAME] [--scrub-reflog] [--nested]` | Anonymize all remotes and submodules (recursively). Default alias is random (`r` + 8 hex) so it reveals nothing; `origin` gets `NAME`, other remotes `NAME-<remote>`, submodules `NAME-<submodule>`. Idempotent. `--scrub-reflog`: see [Reflogs](#reflogs); `--nested`: see [Nested repositories](#nested-repositories). |
+| `git anon off [--nested]` | Restore all remotes and submodules of the current repo. |
+| `git anon status [--nested]` | Show which remotes and submodules are anonymized. |
 | `git anon update` | Like `git submodule update --init --recursive`, but anonymizes each level before cloning the next. |
 | `git anon add <alias> [remote]` | Anonymize one remote with a chosen alias. |
 | `git anon restore [remote]` | Restore one remote. |
@@ -162,6 +162,30 @@ Submodules you have not initialized stay uninitialized; `git submodule update
   reports how many.
 - `git submodule sync` copies the URLs from `.gitmodules` back into
   `.git/config`. Run `git anon init` again afterwards.
+- Leftovers of removed, renamed or `deinit`-ed submodules are covered too:
+  `submodule.<name>.url` keys no longer listed in `.gitmodules`, and every
+  submodule git dir under `.git/modules` (at any depth), checked out or not.
+
+### Nested repositories
+
+Some projects clone dependencies into their working tree as independent
+repositories (e.g. `third_party/foo` with its own `.git` directory, created
+by a bootstrap script, gclient or by hand). They are not submodules, so git —
+and `git anon init` — knows nothing about them. `git anon init` reports them
+(it looks three levels deep, which is cheap); to anonymize them as well:
+
+```sh
+git anon init --nested      # also: git anon off --nested, git anon status --nested
+```
+
+- Walks the whole working tree once (skipping `.git` and `node_modules`), so
+  it can take a while on very large trees.
+- Every repository with a `.git` *directory* is handled like the top-level
+  one, including its submodules; each gets its own random alias. A `.git`
+  *file* is a submodule or worktree, which its owning repository covers.
+- Repositories inside linked worktrees (e.g. agent worktrees) are found too.
+- Tools that later re-clone such a dependency from its real URL create a new
+  clone; run `git anon init --nested` again afterwards.
 
 ## Windows
 
@@ -192,6 +216,9 @@ Works from PowerShell, cmd and Git Bash with Git for Windows. Install with
 - Submodule URLs in the tracked `.gitmodules` file stay visible (see
   [Submodules](#submodules)).
 - A remote with several `url` values must be handled manually.
+- `git anon` calls `git config` once per changed key. Where starting git is
+  slow (some antivirus/EDR setups, Windows), the first `init` of a repository
+  with hundreds of submodules can take a few minutes; re-runs only read.
 
 ## Security notes
 

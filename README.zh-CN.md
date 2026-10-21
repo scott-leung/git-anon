@@ -83,8 +83,8 @@ git anon status     # 查看状态
 git anon off        # 恢复真实地址
 ```
 
-- `git anon init [--alias 名字] [--scrub-reflog]`：匿名化所有 remote 和子模块（递归）。默认生成随机别名（`r` + 8 位十六进制），不会从仓库名推导，避免泄露；`origin` 用该别名，其它 remote 用 `名字-<remote>`，子模块用 `名字-<子模块名>`。可重复执行。`--scrub-reflog` 见下文"reflog"。
-- `git anon off` / `git anon status`：恢复 / 查看当前仓库所有 remote 和子模块。
+- `git anon init [--alias 名字] [--scrub-reflog] [--nested]`：匿名化所有 remote 和子模块（递归）。默认生成随机别名（`r` + 8 位十六进制），不会从仓库名推导，避免泄露；`origin` 用该别名，其它 remote 用 `名字-<remote>`，子模块用 `名字-<子模块名>`。可重复执行。`--scrub-reflog` 见下文"reflog"，`--nested` 见下文"嵌套仓库"。
+- `git anon off [--nested]` / `git anon status [--nested]`：恢复 / 查看当前仓库所有 remote 和子模块。
 - `git anon add <别名> [remote]` / `git anon restore [remote]`：单个 remote 的匿名化与恢复。
 - `git anon list`：列出别名（不显示地址）；`git anon show <别名>`：显示真实地址。
 - `git anon clone [--recurse-submodules] <别名> [目录]`：通过别名克隆。换电脑时把 map 文件拷过去即可。
@@ -114,6 +114,20 @@ git anon init --scrub-reflog
 - 嵌套子模块用了相对 URL 时，请用 `git anon update`（或 `git anon clone --recurse-submodules`）代替 `git submodule update --init --recursive`，否则原生 git 会基于 `anon::…` 解析相对地址而失败。
 - `.gitmodules` 是提交进仓库、所有人共享的文件，git-anon 不会修改它，其中的 URL 仍然可见；`git anon init` 会提示数量。
 - `git submodule sync` 会把 `.gitmodules` 里的地址写回 `.git/config`，之后需要重新执行 `git anon init`。
+- 被删除、改名或 `deinit` 过的子模块留下的残留也会处理：`.gitmodules` 里已不存在的 `submodule.<name>.url`，以及 `.git/modules` 下所有层级的子模块 git 目录（无论是否检出）。
+
+### 嵌套仓库
+
+有些项目会把依赖作为独立仓库 clone 到工作目录里（例如带有自己 `.git` 目录的 `third_party/foo`，由 bootstrap 脚本、gclient 或手动创建）。它们不是子模块，git 和 `git anon init` 都不知道它们的存在。`git anon init` 会提示发现了多少个（只查三层，开销很小）；如需一并匿名化：
+
+```sh
+git anon init --nested      # 以及 git anon off --nested、git anon status --nested
+```
+
+- 会遍历整个工作目录一次（跳过 `.git` 和 `node_modules`），目录树很大时可能耗时较长。
+- 每个带 `.git` **目录**的仓库都按顶层仓库的方式处理（包括它的子模块），各自使用随机别名。`.git` 是**文件**的是子模块或 worktree，由所属仓库负责。
+- 关联 worktree（例如 Agent 创建的 worktree）里的嵌套仓库也会被找到。
+- 如果之后有工具按真实地址重新 clone 了某个依赖，那是一份新的 clone，需要再执行一次 `git anon init --nested`。
 
 ## 局限
 
@@ -122,6 +136,7 @@ git anon init --scrub-reflog
 - `gh`、IDE 的"在 GitHub 上打开"等依赖 remote 识别托管平台的功能会失效，可临时 `git anon off` 或用 `gh -R owner/repo`。
 - 提交进仓库的 `.gitmodules` 里的子模块地址仍然可见（见上文"子模块"）。
 - 一个 remote 配了多个 `url` 时需要手动处理。
+- 每改一个配置项会调用一次 `git config`。在启动 git 很慢的环境（部分杀毒/EDR、Windows）里，首次对带几百个子模块的仓库执行 `init` 可能需要几分钟；之后重复执行只做读取。
 
 ## 安全说明
 
