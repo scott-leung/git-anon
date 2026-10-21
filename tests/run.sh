@@ -207,26 +207,70 @@ check "clone --recurse-submodules through alias" git anon clone --recurse-submod
 check "clone --recurse-submodules: nested checked out" test -f "$T/sm4/rel/nested/f.txt"
 check "clone --recurse-submodules: no real URL left" test -z "$(leaks "$T/sm4")"
 
-echo "# traces outside config (reflog, FETCH_HEAD)"
+echo "# reflog / FETCH_HEAD (opt-in: --scrub-reflog)"
+git clone -q "$S/super.git" "$T/tr0"
+(cd "$T/tr0" && git anon init) > "$T/tr0.out" 2>&1
+check "default: reflog left untouched" grep -rqF "$S/super.git" "$T/tr0/.git/logs"
+check "default: note about --scrub-reflog printed" grep -q -- "--scrub-reflog" "$T/tr0.out"
+check "default: no scrub warning" sh -c "! grep -q '^warning:' '$T/tr0.out'"
+
 git clone -q "$S/super.git" "$T/tr1"
 git -C "$T/tr1" fetch -q origin
 check "precondition: reflog records clone URL" grep -rqF "$S/super.git" "$T/tr1/.git/logs"
-(cd "$T/tr1" && git anon init) >/dev/null
+(cd "$T/tr1" && git anon init --scrub-reflog) > "$T/tr1.out" 2>&1
+check "--scrub-reflog warns it can be slow" grep -q "^warning: --scrub-reflog" "$T/tr1.out"
 check "reflog and FETCH_HEAD scrubbed" sh -c "! grep -rqF '$S/super.git' '$T/tr1/.git/logs' '$T/tr1/.git/FETCH_HEAD'"
 check "reflog still readable" sh -c "git -C '$T/tr1' reflog -1 | grep -q 'clone: from anon::'"
+check "no lock or temp files left" sh -c "! find '$T/tr1/.git' -name '*.lock' -o -name '*.anon-tmp.*' | grep -q ."
+
 git clone -q "$S/super.git" "$T/tr2"
-(cd "$T/tr2" && git anon init >/dev/null && git anon init) > "$T/tr2.out"
-check "rerun on already-anonymized repo is clean" sh -c "! grep -rqF '$S' '$T/tr2/.git/logs'"
+(cd "$T/tr2" && git anon init --scrub-reflog >/dev/null 2>&1 && git anon init --scrub-reflog) > "$T/tr2.out" 2>&1
+check "rerun on already-scrubbed repo is clean" sh -c "! grep -rqF '$S' '$T/tr2/.git/logs'"
 check "nothing printed about scrubbing on clean rerun" sh -c "! grep -q scrubbed '$T/tr2.out'"
+
 git clone -q "$S/super.git" "$T/tr3"
-git -C "$T/tr3" remote set-url origin "anon::$(git -C "$T/tr1" config remote.origin.url | sed 's/^anon:://')"
-(cd "$T/tr3" && git anon init) > "$T/tr3.out"
-check "repo anonymized by an older version gets scrubbed" sh -c "! grep -rqF '$S' '$T/tr3/.git/logs' && grep -q scrubbed '$T/tr3.out'"
+(cd "$T/tr3" && git anon init) >/dev/null 2>&1
+(cd "$T/tr3" && git anon init --scrub-reflog) > "$T/tr3.out" 2>&1
+check "already-anonymized repo scrubbed on request" sh -c "! grep -rqF '$S' '$T/tr3/.git/logs' && grep -q scrubbed '$T/tr3.out'"
+
 git clone -q "git@fakehost:$S/super.git" "$T/tr4"
 check "precondition: reflog records URL without user" grep -rqF "clone: from fakehost:$S/super.git" "$T/tr4/.git/logs"
-(cd "$T/tr4" && git anon init) >/dev/null
+(cd "$T/tr4" && git anon init --scrub-reflog) >/dev/null 2>&1
 check "scp-style URL scrubbed in user-less form too" sh -c "! grep -rqF 'fakehost' '$T/tr4/.git/logs'"
+
+git clone -q "$S/super.git" "$T/tr5"
+: > "$T/tr5/.git/HEAD.lock"
+(cd "$T/tr5" && git anon init --scrub-reflog) > "$T/tr5.out" 2>&1
+check "locked ref: skipped with a warning" grep -q "HEAD.lock is locked" "$T/tr5.out"
+check "locked ref: its reflog left intact" grep -qF "$S/super.git" "$T/tr5/.git/logs/HEAD"
+check "locked ref: foreign lock not removed" test -e "$T/tr5/.git/HEAD.lock"
+check "locked ref: other reflogs still scrubbed" sh -c "! grep -qF '$S/super.git' '$T/tr5/.git/logs/refs/heads/main'"
+rm -f "$T/tr5/.git/HEAD.lock"
+
+git clone -q "$S/super.git" "$T/tr6"
+git -C "$T/tr6" worktree add -q "$T/tr6-wt" -b wt 2>/dev/null
+printf '%s\n' "0000000000000000000000000000000000000000 $(git -C "$T/tr6" rev-parse HEAD) t <t@t> 1700000000 +0000	pull $S/super.git: note" >> "$T/tr6/.git/worktrees/tr6-wt/logs/HEAD"
+(cd "$T/tr6" && git anon init --scrub-reflog) >/dev/null 2>&1
+check "linked worktree reflog scrubbed" sh -c "! grep -qF '$S' '$T/tr6/.git/worktrees/tr6-wt/logs/HEAD'"
+
+(cd "$T/sm1" && git anon off && git anon init --scrub-reflog) >/dev/null 2>&1
 check "submodule reflogs scrubbed" sh -c "! grep -rqF '$S' \$(find '$T/sm1/.git/modules' -type d -name logs)"
+
+echo "# performance: 10000 reflog files"
+git clone -q "$S/super.git" "$T/perf"
+h=$(git -C "$T/perf" rev-parse HEAD)
+mkdir -p "$T/perf/.git/logs/refs/remotes/origin/many"
+i=0
+while [ $i -lt 10000 ]; do
+  i=$((i + 1))
+  printf '%s %s t <t@t> 1700000000 +0000\tfetch: storing head\n' 0000000000000000000000000000000000000000 "$h"
+done | awk -v d="$T/perf/.git/logs/refs/remotes/origin/many" '{ f = d "/b" NR; print > f; close(f) }'
+start=$(date +%s)
+(cd "$T/perf" && git anon init --scrub-reflog) >/dev/null 2>&1
+secs=$(( $(date +%s) - start ))
+echo "     (init --scrub-reflog with 10000 reflog files: ${secs}s)"
+check "10000 reflog files scrubbed in under 60s" test "$secs" -lt 60
+check "10000 reflog files: real URL gone" sh -c "! grep -rqF '$S/super.git' '$T/perf/.git/logs'"
 
 echo "# rejection"
 check_not "invalid alias rejected" git ls-remote "anon::../etc"

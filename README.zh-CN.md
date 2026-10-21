@@ -78,11 +78,24 @@ git anon status     # 查看状态
 git anon off        # 恢复真实地址
 ```
 
-- `git anon init [--alias 名字]`：默认生成随机别名（`r` + 8 位十六进制），不会从仓库名推导，避免泄露；`origin` 用该别名，其它 remote 用 `名字-<remote>`。可重复执行。
+- `git anon init [--alias 名字] [--scrub-reflog]`：默认生成随机别名（`r` + 8 位十六进制），不会从仓库名推导，避免泄露；`origin` 用该别名，其它 remote 用 `名字-<remote>`。可重复执行。
 - `git anon add <别名> [remote]` / `git anon restore [remote]`：单个 remote 的匿名化与恢复。
 - `git anon list`：列出别名（不显示地址）；`git anon show <别名>`：显示真实地址。
 - `git anon clone [--recurse-submodules] <别名> [目录]`：通过别名克隆。换电脑时把 map 文件拷过去即可。
 - `git anon update`：相当于 `git submodule update --init --recursive`，但每一层子模块在克隆下一层之前都会先完成匿名化。
+
+### reflog
+
+git 还会把 remote 地址写进 reflog（`.git/logs` 里的 `clone: from <地址>`）和 `FETCH_HEAD`。`git anon init` 默认不处理它们，只打印一条提示。如需一并清除：
+
+```sh
+git anon init --scrub-reflog
+```
+
+- 只把 reflog 消息里的 URL 文本替换成 `anon::<别名>`；提交、ref 和 reflog 条目本身不变，`HEAD@{n}`、找回丢失的提交都照常可用。`git anon off` 不会把它改回去。
+- 每个文件都在持有该 ref 的 `.lock` 时原子替换（与 git 自身做法一致）；正被其他 git 进程锁住的 ref 会跳过并给出警告。
+- 覆盖关联的 worktree 和子模块。由于要改写 `.git/logs` 下的文件，ref 非常多的仓库可能耗时较长。
+- 使用 reftable 后端的仓库以二进制格式存储 reflog，不会被处理。
 
 ### 子模块
 

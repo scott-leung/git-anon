@@ -105,7 +105,7 @@ git anon off                   # put the real URLs back
 
 | Command | |
 |---|---|
-| `git anon init [--alias NAME]` | Anonymize all remotes and submodules (recursively). Default alias is random (`r` + 8 hex) so it reveals nothing; `origin` gets `NAME`, other remotes `NAME-<remote>`, submodules `NAME-<submodule>`. Idempotent. |
+| `git anon init [--alias NAME] [--scrub-reflog]` | Anonymize all remotes and submodules (recursively). Default alias is random (`r` + 8 hex) so it reveals nothing; `origin` gets `NAME`, other remotes `NAME-<remote>`, submodules `NAME-<submodule>`. Idempotent. `--scrub-reflog`: see [Reflogs](#reflogs). |
 | `git anon off` | Restore all remotes and submodules of the current repo. |
 | `git anon status` | Show which remotes and submodules are anonymized. |
 | `git anon update` | Like `git submodule update --init --recursive`, but anonymizes each level before cloning the next. |
@@ -117,6 +117,26 @@ git anon off                   # put the real URLs back
 
 A `pushurl`, if set, is anonymized as `<alias>.push`.
 On a new machine, copy `~/.config/git-anon/map` over and use `git anon clone`.
+
+### Reflogs
+
+git also writes the remote URL into reflogs (`clone: from <url>` in
+`.git/logs`) and into `FETCH_HEAD`. By default `git anon init` leaves these
+alone and prints a note. To remove the URL there as well:
+
+```sh
+git anon init --scrub-reflog
+```
+
+- Only the URL text in reflog messages is replaced with `anon::<alias>`;
+  commits, refs and reflog entries themselves are unchanged, so `HEAD@{n}`
+  and recovering lost commits keep working. It is not undone by `git anon off`.
+- Each file is rewritten atomically while holding the ref's `.lock`, as git
+  does; a ref that is locked by a running git is skipped with a warning.
+- Covers linked worktrees and submodules. It rewrites files under
+  `.git/logs`, so it can take a while on repositories with very many refs.
+- Repositories using the reftable backend store reflogs in binary form; those
+  are not touched.
 
 ### Submodules
 

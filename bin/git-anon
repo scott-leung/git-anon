@@ -7,13 +7,17 @@
 set -eu
 
 VERSION=0.3.0
+SCRUB=
 MAP="${GIT_ANON_MAP:-${XDG_CONFIG_HOME:-$HOME/.config}/git-anon/map}"
 
 usage() {
   cat <<'EOF'
 usage: git anon <command> [args]
 
-  init [--alias NAME]    anonymize every remote of the current repo and its submodules
+  init [--alias NAME] [--scrub-reflog]
+                         anonymize every remote of the current repo and its submodules;
+                         --scrub-reflog also removes the real URL from reflogs (slow
+                         on repos with many refs)
   off                    restore every remote of the current repo and its submodules
   status                 show which remotes and submodules are anonymized
   update                 like `git submodule update --init --recursive`, anonymizing
@@ -96,32 +100,65 @@ strip_userinfo() {
 }
 
 # scrub_traces <real-url> <replacement>: git also records the URL outside the
-# config, e.g. "clone: from <url>" in reflogs and in FETCH_HEAD. Replace the
-# URL text there (reflog structure is untouched).
+# config, e.g. "clone: from <url>" in reflogs and in FETCH_HEAD. Opt-in
+# (`init --scrub-reflog`): replace the URL text there, both verbatim and in
+# the user-stripped form git writes. Reflog structure is untouched.
 scrub_traces() {
-  [ -n "$1" ] || return 0
-  scrub_literal "$1" "$2"
+  [ -n "$SCRUB" ] && [ -n "$1" ] || return 0
   bare=$(strip_userinfo "$1")
-  [ "$bare" = "$1" ] || scrub_literal "$bare" "$2"
-}
-
-scrub_literal() {
   gd=$(git rev-parse --git-dir)
   cd_=$(git rev-parse --git-common-dir)
-  for d in "$gd" "$cd_"; do
-    find "$d/logs" "$d/FETCH_HEAD" -type f 2>/dev/null | while IFS= read -r f; do
-      grep -qF -- "$1" "$f" || continue
-      awk -v from="$1" -v to="$2" '{
-        out = ""; line = $0
-        while ((i = index(line, from)) > 0) {
-          out = out substr(line, 1, i - 1) to
-          line = substr(line, i + length(from))
-        }
-        print out line
-      }' "$f" > "$f.anon-tmp" && cat "$f.anon-tmp" > "$f" && rm -f "$f.anon-tmp"
-      echo "scrubbed real URL from ${f#"$d"/}"
-    done
+  scrub_dir "$gd" "$1" "$bare" "$2"
+  if [ "$(cd "$cd_" && pwd -P)" != "$(cd "$gd" && pwd -P)" ]; then
+    scrub_dir "$cd_" "$1" "$bare" "$2"
+  fi
+  for w in "$cd_"/worktrees/*; do
+    [ -d "$w" ] || continue
+    [ "$(cd "$w" && pwd -P)" = "$(cd "$gd" && pwd -P)" ] || scrub_dir "$w" "$1" "$bare" "$2"
   done
+}
+
+# scrub_dir <git-dir> <url> <bare-url> <replacement>: one grep finds the few
+# files that mention the URL, so the cost does not grow with the ref count.
+scrub_dir() {
+  grep -rlF -e "$2" -e "$3" "$1/logs" "$1/FETCH_HEAD" 2>/dev/null |
+    while IFS= read -r f; do
+      case "$f" in
+        "$1"/logs/*) lock="$1/${f#"$1"/logs/}.lock" ;;  # the ref's lock, as git uses
+        *) lock= ;;
+      esac
+      rewrite_file "$f" "$2" "$3" "$4" "$lock" && echo "scrubbed real URL from ${f#"$1"/}"
+    done
+}
+
+# rewrite_file <file> <from1> <from2> <to> [lock]: replace literal strings,
+# holding the ref lock so a concurrent git cannot append in between, and
+# swapping the file in atomically.
+rewrite_file() {
+  if [ -n "$5" ]; then
+    mkdir -p "$(dirname "$5")"
+    if ! (set -C; : > "$5") 2>/dev/null; then
+      echo "warning: ${5##*/} is locked (is git running?); skipped $1" >&2
+      return 1
+    fi
+  fi
+  tmp="$1.anon-tmp.$$"
+  ok=
+  if awk -v a="$2" -v b="$3" -v to="$4" '
+    function rep(line, from,   out, i) {
+      out = ""
+      while ((i = index(line, from)) > 0) {
+        out = out substr(line, 1, i - 1) to
+        line = substr(line, i + length(from))
+      }
+      return out line
+    }
+    { print rep(rep($0, a), b) }' "$1" > "$tmp" && mv -f "$tmp" "$1"; then
+    ok=1
+  fi
+  rm -f "$tmp"
+  [ -z "$5" ] || rm -f "$5"
+  [ -n "$ok" ] || { echo "warning: could not rewrite $1" >&2; return 1; }
 }
 
 # anonymize_key <remote> <url|pushurl> <alias> [auto]; returns 1 if the key is unset.
@@ -403,6 +440,7 @@ cmd_init() {
     case "$1" in
       --alias) [ $# -ge 2 ] || die "--alias needs a value"; base=$2; shift 2 ;;
       --alias=*) base=${1#--alias=}; shift ;;
+      --scrub-reflog) SCRUB=1; shift ;;
       *) die "unknown option '$1'" ;;
     esac
   done
@@ -414,7 +452,15 @@ cmd_init() {
   [ -n "$base" ] || base="r$(rand_hex)"
   valid_alias "$base"
   ensure_map
+  if [ -n "$SCRUB" ]; then
+    echo "warning: --scrub-reflog rewrites files under .git/logs (and FETCH_HEAD), in every" >&2
+    echo "         submodule too; on repositories with many refs this can take a long time" >&2
+  fi
   anon_repo "$base"
+  if [ -z "$SCRUB" ]; then
+    echo "note: reflogs (.git/logs) may still contain the real URL, e.g. \"clone: from ...\";"
+    echo "      run \`git anon init --scrub-reflog\` to remove it (can be slow on repos with many refs)"
+  fi
 }
 
 cmd_update() {
